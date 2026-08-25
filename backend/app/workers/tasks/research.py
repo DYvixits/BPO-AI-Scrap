@@ -37,6 +37,7 @@ from app.engines.crawler.prioritization import (
     InformationGainTracker,
     score_candidate,
 )
+from app.engines.entity_resolution.resolver import ResolvablePage, resolve_companies
 from app.engines.extraction.content import ExtractedContent, extract_content
 from app.engines.extraction.dedup import NearDuplicateDetector
 from app.engines.extraction.structured import extract_structured_data
@@ -45,7 +46,7 @@ from app.engines.search.base import SearchHit
 from app.engines.search.duckduckgo import DuckDuckGoSearchProvider
 from app.engines.search_strategy.strategy import build_queries
 from app.models.research import ResearchStatus
-from app.repositories import research_repository
+from app.repositories import entity_repository, research_repository
 from app.services.confidence import basic_relevance_score
 
 logger = logging.getLogger(__name__)
@@ -363,6 +364,53 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
                 job_id,
                 "crawl.stopped_early",
                 {"reason": stop_reason, "pages_crawled": pages_crawled},
+            )
+
+        # --- ENTITY RESOLUTION (AUDIT_BPO_CRM.md Phase 5) — group crawled
+        # pages into resolved companies (e.g. a company's own site plus its
+        # Crunchbase profile) instead of leaving every page as an
+        # unrelated flat result. Runs once, after crawling ends; pages
+        # that failed to fetch have no structured_data/title to resolve a
+        # name from, so they're excluded. ---
+        async with _tenant_session(organization_id) as db:
+            crawled_pages = await research_repository.list_crawl_pages_for_job(db, job_id=job_id)
+        resolvable = [
+            ResolvablePage(
+                url=page.url,
+                domain=urlparse(page.url).netloc,
+                title=page.title,
+                structured_data=page.structured_data,
+            )
+            for page in crawled_pages
+            if page.error is None
+        ]
+        resolved_companies = resolve_companies(resolvable)
+        for resolved in resolved_companies:
+            async with _tenant_session(organization_id) as db:
+                company = await entity_repository.add_company(
+                    db,
+                    organization_id=organization_id,
+                    job_id=job_id,
+                    canonical_name=resolved.canonical_name,
+                    primary_domain=resolved.primary_domain,
+                    description=resolved.description,
+                    match_confidence=resolved.match_confidence,
+                )
+                for alias in resolved.aliases:
+                    await entity_repository.add_alias(
+                        db,
+                        organization_id=organization_id,
+                        company_id=company.id,
+                        alias_type=alias.alias_type,
+                        value=alias.value,
+                        source_url=alias.source_url,
+                    )
+                await entity_repository.set_results_company(
+                    db, job_id=job_id, urls=resolved.member_urls, company_id=company.id
+                )
+        if resolved_companies:
+            await _emit(
+                organization_id, job_id, "entities.resolved", {"count": len(resolved_companies)}
             )
 
         await _set_status(organization_id, job_id, ResearchStatus.EXTRACTING)

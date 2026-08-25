@@ -9,9 +9,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { describeEvent, STATUS_LABEL, statusProgressPercent } from "@/features/research/format";
-import { getResearch, getResearchResults } from "@/features/research/api";
+import { getResearch, getResearchCompanies, getResearchResults } from "@/features/research/api";
 import { useResearchEvents } from "@/features/research/useResearchEvents";
-import type { ResearchEvent, ResearchObjective, ResearchResult } from "@/types/api";
+import type { Company, ResearchEvent, ResearchObjective, ResearchResult } from "@/types/api";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed"]);
 
@@ -32,6 +32,32 @@ export function ResearchDetailPage() {
     queryFn: () => getResearchResults(id as string),
     enabled: !!id && job?.status === "completed",
   });
+
+  const { data: companies } = useQuery({
+    queryKey: ["research", id, "companies"],
+    queryFn: () => getResearchCompanies(id as string),
+    enabled: !!id && job?.status === "completed",
+  });
+
+  const groupedResults = useMemo(() => {
+    if (!results) return [];
+    const companyById = new Map((companies ?? []).map((c) => [c.id, c]));
+    const groups = new Map<string, { company: Company | null; results: ResearchResult[] }>();
+    for (const result of results) {
+      const key = result.company_id ?? "__ungrouped__";
+      if (!groups.has(key)) {
+        groups.set(key, { company: result.company_id ? (companyById.get(result.company_id) ?? null) : null, results: [] });
+      }
+      groups.get(key)!.results.push(result);
+    }
+    // Grouped companies first (most members first — the most consolidated
+    // picture of a company), ungrouped results last.
+    return [...groups.values()].sort((a, b) => {
+      if (!a.company) return 1;
+      if (!b.company) return -1;
+      return b.results.length - a.results.length;
+    });
+  }, [results, companies]);
 
   const { events: liveEvents } = useResearchEvents(isTerminal ? undefined : id);
 
@@ -141,9 +167,9 @@ export function ResearchDetailPage() {
             </Card>
           )}
           {results && results.length > 0 && (
-            <div className="flex flex-col gap-3">
-              {results.map((result) => (
-                <ResultCard key={result.id} result={result} />
+            <div className="flex flex-col gap-4">
+              {groupedResults.map((group, i) => (
+                <CompanyGroup key={group.company?.id ?? `ungrouped-${i}`} group={group} />
               ))}
             </div>
           )}
@@ -186,6 +212,58 @@ function ObjectiveChips({ objective }: { objective: ResearchObjective }) {
           <span className="font-medium text-foreground">{chip.value}</span>
         </span>
       ))}
+    </div>
+  );
+}
+
+function CompanyGroup({
+  group,
+}: {
+  group: { company: Company | null; results: ResearchResult[] };
+}) {
+  const { company, results } = group;
+
+  if (!company) {
+    return (
+      <div className="flex flex-col gap-3">
+        {results.length > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Not grouped into a company (no site name found to resolve by)
+          </p>
+        )}
+        {results.map((result) => (
+          <ResultCard key={result.id} result={result} />
+        ))}
+      </div>
+    );
+  }
+
+  const confidencePct = Math.round(company.match_confidence * 100);
+  const domainAliases = company.aliases.filter((a) => a.alias_type === "domain");
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-1 border-b border-border pb-1.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <h3 className="font-medium">{company.canonical_name}</h3>
+          {domainAliases.length > 1 && (
+            <span
+              className="rounded-full bg-secondary/60 px-2 py-0.5 text-xs text-muted-foreground"
+              title={`Entity Resolution merged ${domainAliases.length} sources into this company — see aliases below.`}
+            >
+              {domainAliases.length} sources merged · {confidencePct}% match confidence
+            </span>
+          )}
+        </div>
+        {company.description && (
+          <span className="truncate text-xs text-muted-foreground">{company.description}</span>
+        )}
+      </div>
+      <div className="flex flex-col gap-3">
+        {results.map((result) => (
+          <ResultCard key={result.id} result={result} />
+        ))}
+      </div>
     </div>
   );
 }
