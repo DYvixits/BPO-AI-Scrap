@@ -185,9 +185,13 @@ async def test_pipeline_stops_on_diminishing_returns_before_exhausting_budget(
 
     async def fake_fetch(self, url):
         fetched_urls.append(url)
+        # Distinct text per page (not just a distinct URL) so Phase 4's
+        # near-duplicate detector doesn't collapse these into each other —
+        # this test is about the stall/early-stop logic, not dedup.
+        sentence = f"This page ({url}) has nothing to do with the objective at all."
         html = (
             "<html><head><title>Nothing relevant</title></head><body><article>"
-            f"{_long_paragraphs('This page has nothing to do with the objective at all.')}"
+            f"{_long_paragraphs(sentence)}"
             "</article></body></html>"
         )
         return FetchResult(url=url, http_status=200, html=html, content_hash=url, error=None)

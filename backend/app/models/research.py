@@ -123,6 +123,9 @@ class CrawlPage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Second extraction pass output (engines/extraction/structured.py):
+    # JSON-LD, Open Graph tags, emails/phones found in the page text.
+    structured_data: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     source: Mapped["Source"] = relationship(back_populates="pages")

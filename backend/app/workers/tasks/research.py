@@ -31,12 +31,15 @@ from app.core.config import get_settings
 from app.core.redis import get_redis_pool, publish_research_event
 from app.engines.crawler.fetcher import FetchResult, PageFetcher
 from app.engines.crawler.links import extract_links
+from app.engines.crawler.normalize import normalize_url
 from app.engines.crawler.prioritization import (
     CrawlCandidate,
     InformationGainTracker,
     score_candidate,
 )
 from app.engines.extraction.content import ExtractedContent, extract_content
+from app.engines.extraction.dedup import NearDuplicateDetector
+from app.engines.extraction.structured import extract_structured_data
 from app.engines.query_intelligence.objective import ResearchObjective
 from app.engines.search.base import SearchHit
 from app.engines.search.duckduckgo import DuckDuckGoSearchProvider
@@ -154,9 +157,19 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
         semaphore = asyncio.Semaphore(settings.crawler_max_concurrency)
         max_pages = int(job.config.get("max_pages", max_results))
 
+        # URL normalization dedup (AUDIT_BPO_CRM.md Phase 4, layer 1): a
+        # tracking-param variant of a URL already queued is the same page,
+        # not a new candidate — checked at push time so it never occupies a
+        # frontier slot or a crawl-budget page in the first place.
+        seen_normalized: set[str] = set()
+
         counter = itertools.count()
         frontier: list[tuple[float, int, CrawlCandidate]] = []
         for hit in hits:
+            normalized = normalize_url(hit.url)
+            if normalized in seen_normalized:
+                continue
+            seen_normalized.add(normalized)
             candidate = CrawlCandidate(url=hit.url, anchor_text=hit.title or "", depth=0)
             score = score_candidate(
                 url=candidate.url, anchor_text=candidate.anchor_text, objective=objective, depth=0
@@ -164,7 +177,11 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
             heapq.heappush(frontier, (-score, next(counter), candidate))
 
         gain_tracker = InformationGainTracker(objective.required_attributes)
-        visited: set[str] = set()
+        # Layer 3 (after URL normalization and exact content-hash match):
+        # near-duplicate text, e.g. a page that differs only by a
+        # timestamp or session token embedded in otherwise-identical
+        # markup. Scoped to this one job, not a cross-job cache.
+        near_dup_detector = NearDuplicateDetector()
         result_count = 0
         pages_crawled = 0
         stall_streak = 0
@@ -184,10 +201,11 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
                 and len(wave) < settings.crawler_max_concurrency
                 and pages_crawled + len(wave) < max_pages
             ):
+                # No duplicate check needed here: seen_normalized is checked
+                # (and updated) at push time below, so nothing that would
+                # collide with an already-queued candidate ever enters the
+                # frontier in the first place.
                 _neg_score, _seq, candidate = heapq.heappop(frontier)
-                if candidate.url in visited:
-                    continue
-                visited.add(candidate.url)
                 wave.append(candidate)
 
             if not wave:
@@ -238,14 +256,28 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
                     continue
 
                 content: ExtractedContent = extract_content(fetch_result.html, url=fetch_result.url)
+                structured = extract_structured_data(fetch_result.html, url=fetch_result.url)
 
                 async with _tenant_session(organization_id) as db:
-                    is_duplicate = (
+                    exact_duplicate = (
                         fetch_result.content_hash is not None
                         and await research_repository.content_hash_already_used(
                             db, job_id=job_id, content_hash=fetch_result.content_hash
                         )
                     )
+                    # Only worth the comparison cost when it isn't already
+                    # known to be a duplicate by the cheaper exact-hash
+                    # check — but still record its shingles either way, so
+                    # a *later* page can be compared against this one.
+                    near_duplicate = near_dup_detector.check_and_record(content.text)
+                    is_duplicate = exact_duplicate or near_duplicate
+                    if exact_duplicate:
+                        duplicate_reason: str | None = "exact_hash"
+                    elif near_duplicate:
+                        duplicate_reason = "near_duplicate"
+                    else:
+                        duplicate_reason = None
+
                     page = await research_repository.add_crawl_page(
                         db,
                         organization_id=organization_id,
@@ -255,6 +287,7 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
                         content_hash=fetch_result.content_hash,
                         title=content.title,
                         extracted_text=content.text,
+                        structured_data=structured.as_dict(),
                         error=None,
                     )
                     if not is_duplicate:
@@ -281,15 +314,22 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
                     organization_id,
                     job_id,
                     "page.completed",
-                    {"url": candidate.url, "title": content.title, "duplicate": is_duplicate},
+                    {
+                        "url": candidate.url,
+                        "title": content.title,
+                        "duplicate": is_duplicate,
+                        "duplicate_reason": duplicate_reason,
+                    },
                 )
 
                 if pages_crawled < max_pages:
                     new_links = extract_links(fetch_result.html, base_url=fetch_result.url)
                     added = 0
                     for link in new_links:
-                        if link.url in visited:
+                        normalized_link = normalize_url(link.url)
+                        if normalized_link in seen_normalized:
                             continue
+                        seen_normalized.add(normalized_link)
                         child = CrawlCandidate(
                             url=link.url, anchor_text=link.anchor_text, depth=candidate.depth + 1
                         )

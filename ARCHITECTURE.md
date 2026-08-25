@@ -31,11 +31,20 @@
                  ┌──────────────┼──────────────┐
                  ▼              ▼              ▼
           ┌────────────┐ ┌────────────┐ ┌────────────┐
-          │  Search    │ │  Crawler   │ │ Extraction │
-          │  Engine    │ │  Engine    │ │  Engine    │
-          │(provider   │ │(httpx, SSRF│ │(trafilatura│
-          │ abstraction│ │ guarded)   │ │ + bs4/lxml)│
-          └─────▲──────┘ └────────────┘ └────────────┘
+          │  Search    │ │  Crawler   │ │ Extraction │  2 passes: trafilatura
+          │  Engine    │ │  Engine    │ │  Engine    │  main-content text +
+          │(provider   │ │(httpx, SSRF│ │(trafilatura│  structured.py (JSON-LD,
+          │ abstraction│ │ guarded)   │ │ + bs4/lxml)│  OG tags, contact info) —
+          └─────▲──────┘ └──────┬─────┘ └────────────┘  dedup.py's near-duplicate
+                │               │ same-domain             check runs against pass 1's
+                │               │ links found on          text (URL-normalization
+                │               │ each crawled page       dedup runs earlier, in the
+                │        ┌──────▼──────┐                  frontier itself)
+                │        │  Crawl      │  NextBestURL priority frontier:
+                │        │Prioritization│ score_candidate() ranks pages by
+                │        │  (frontier) │ objective fit; InformationGain-
+                │        └─────────────┘ Tracker stops the crawl early once
+                │                        required_attributes are satisfied
                 │ N queries (deduped by URL)
           ┌─────┴──────┐
           │  Search    │  builds up to MAX_QUERIES=4 targeted
@@ -100,7 +109,10 @@ bpo-ai-scrap/
 │   │   │   ├── search/             # SearchProvider abstraction + DuckDuckGo impl
 │   │   │   ├── crawler/            # HTTP crawler + SSRF guard + link discovery
 │   │   │   │                       # + goal-driven prioritization (NextBestURL)
-│   │   │   └── extraction/         # trafilatura/bs4-based content extraction
+│   │   │   │                       # + URL normalization (dedup layer 1)
+│   │   │   └── extraction/         # trafilatura main-content text pass +
+│   │   │                           # structured.py (JSON-LD/OG/contact, pass 2)
+│   │   │                           # + dedup.py (near-duplicate shingle/Jaccard)
 │   │   ├── workers/
 │   │   │   ├── worker.py           # arq WorkerSettings
 │   │   │   └── tasks/research.py   # the research pipeline job
@@ -172,7 +184,11 @@ sources
 
 crawl_pages
   id (uuid pk), organization_id fk, source_id fk, url, http_status,
-  content_hash, title, extracted_text, extracted_at, error
+  content_hash, title, extracted_text,
+  structured_data (jsonb — the second extraction pass's output:
+    json_ld, meta_description, og_title/description/site_name, emails,
+    phones — see engines/extraction/structured.py),
+  extracted_at, error
 
 research_results
   id (uuid pk), organization_id fk, research_job_id fk, crawl_page_id fk (nullable),
@@ -251,8 +267,10 @@ token's claims — a user can never read another organization's job.
 - `app/engines/search/base.py::SearchProvider` — `DuckDuckGoSearchProvider` is
   the only implementation today; swapping in Bing/Serper/Tavily/Google CSE is
   a new class, no caller changes.
-- `app/engines/crawler/base.py::PageFetcher` — HTTP-only today (httpx);
-  Phase 4 adds a Playwright-backed implementation selected adaptively per URL.
+- `app/engines/crawler/fetcher.py::PageFetcher` — HTTP-only today (httpx);
+  a Playwright-backed implementation selected adaptively per URL is still
+  open (AUDIT_BPO_CRM.md's Phase 3 remainder — adaptive strategy selection
+  was descoped from Phase 3's session to just goal-driven prioritization).
 - `app/engines/query_intelligence/parser.py::parse_query` — keyword-table
   driven (`keywords.py`), deliberately not an LLM call in this phase (see
   PHASE_PLAN.md — the AI Gateway is sequenced after Phase 6 Verification
@@ -279,6 +297,26 @@ token's claims — a user can never read another organization's job.
   `app/workers/tasks/research.py`). Disabled entirely (falls back to the
   page-budget-only behavior from before this phase) when the objective has
   no `required_attributes` to look for.
+- `app/engines/crawler/normalize.py::normalize_url` — dedup layer 1
+  (AUDIT_BPO_CRM.md Phase 4): strips known tracking parameters (`utm_*`,
+  `fbclid`, `gclid`, ...), sorts remaining query params, strips trailing
+  slashes and fragments, lowercases scheme/host (never the path — path
+  case can be server-meaningful). Used as the frontier's dedup key at push
+  time, so a tracking-param variant of an already-queued URL never
+  occupies a frontier slot or a crawl-budget page.
+- `app/engines/extraction/structured.py::extract_structured_data` —
+  the second extraction pass: parses `<script type="application/ld+json">`
+  blocks, Open Graph / meta description tags, and plain-text email/phone
+  matches. Every field is either literally present in the markup or a
+  direct regex match against visible text — nothing here is inferred.
+- `app/engines/extraction/dedup.py::NearDuplicateDetector` — dedup layer
+  3 (after URL normalization and exact content-hash matching): shingles
+  each page's extracted text into overlapping 5-word sequences and flags
+  a page as a near-duplicate once its Jaccard similarity to any
+  already-seen page in the same job crosses 0.9 — catches pages that
+  differ only by a timestamp or session token embedded in otherwise
+  identical markup, which exact-hash matching alone would miss. Scoped to
+  one job at a time, not a cross-job or cross-tenant cache.
 
 ## 8. Risks identified going in
 
