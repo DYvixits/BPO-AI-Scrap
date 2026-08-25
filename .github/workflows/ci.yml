@@ -28,8 +28,6 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-    env:
-      TEST_DATABASE_URL: postgresql+asyncpg://bpo:bpo@localhost:5432/bpo_ai_scrap
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,8 +48,32 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://bpo:bpo@localhost:5432/bpo_ai_scrap
         run: alembic upgrade head
+      - name: Create least-privilege app role (for RLS tests)
+        # The postgres:16-alpine image's POSTGRES_USER ("bpo") is created as
+        # a SUPERUSER. Postgres superusers unconditionally bypass Row-Level
+        # Security — ENABLE/FORCE ROW LEVEL SECURITY have no effect on them —
+        # so tests/test_rls.py connecting as "bpo" would silently exercise
+        # nothing. "bpo_app" is an ordinary, non-superuser role that RLS
+        # actually applies to, mirroring the role separation any real
+        # deployment needs between the schema owner (runs migrations) and
+        # the role serving live traffic.
+        run: |
+          PGPASSWORD=bpo psql -h localhost -U bpo -d bpo_ai_scrap -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'bpo_app') THEN
+              CREATE ROLE bpo_app LOGIN PASSWORD 'bpo_app';
+            END IF;
+          END
+          $$;
+          GRANT USAGE ON SCHEMA public TO bpo_app;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO bpo_app;
+          GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO bpo_app;
+          SQL
       - name: Test (pytest)
         working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgresql+asyncpg://bpo_app:bpo_app@localhost:5432/bpo_ai_scrap
         run: pytest -q
 
   frontend:
