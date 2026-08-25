@@ -199,6 +199,97 @@ multi-provider Source Discovery) or Phase 3 (Crawler Engine — adaptive
 strategy, goal-driven prioritization), pending direction from whoever's
 driving next.
 
+## Session 3 verification report — Research Orchestrator (Query Intelligence + Search Strategy)
+
+Scope: `AUDIT_BPO_CRM.md`'s Phase 2. A heuristic (non-LLM) Query
+Intelligence Engine that parses the free-text research query into a
+structured `ResearchObjective`, and a Search Strategy Engine that turns
+that objective into multiple targeted search queries instead of searching
+on the raw query alone. Full design rationale in `ARCHITECTURE.md` §1/§7 —
+same implement→test→report discipline as Sessions 1–2.
+
+**IMPLEMENTED** — `app/engines/query_intelligence/` (`objective.py`'s
+`ResearchObjective` model, `keywords.py`'s curated geography/industry/
+signal/attribute tables, `parser.py::parse_query` + `parse_result_limit`);
+`app/engines/search_strategy/strategy.py::build_queries` (up to
+`MAX_QUERIES=4` queries per objective); `research_jobs.objective` column
+(migration `0003_research_objective.py`) populated once at job creation
+by `research_orchestrator.py::create_and_enqueue` and never mutated after;
+the worker (`workers/tasks/research.py`) now runs all of a job's queries
+concurrently via `asyncio.gather`, then dedupes hits by URL before
+crawling; the frontend's `ResearchDetailPage` renders the parsed objective
+as "Understood as:" chips (industry, geography, company size, signals,
+freshness, target entities) so a user can see how their query was
+interpreted, with a tooltip pointing at `objective.matched_keywords` for
+the literal evidence behind each chip.
+
+**TESTED** — 20 new automated tests: 13 for `parse_query`/
+`parse_result_limit` (`tests/test_query_intelligence.py`) and 7 for
+`build_queries` (`tests/test_search_strategy.py`), all SQLite/pure-logic
+(no database dependency — this engine touches no persistence itself).
+54/54 tests pass total. Re-verified the full register → login →
+create-research (with a query exercising industry, geography, company
+size, signals, and a result-limit override) → live-pipeline → completed
+flow end-to-end against real Postgres + Redis + uvicorn + arq, plus a
+Playwright screenshot of the "Understood as:" chips rendering correctly
+on the research detail page against the real Vite dev server.
+
+**WORKING** — confirmed live: a query like "Find 250 fintech companies in
+Cameroon with more than 50 employees that are currently hiring and
+recently raised funding, including their CEO and revenue" parses into
+`industry=[fintech], geography=[Cameroon], company_size_min=50,
+signals=[hiring, funding], required_attributes=[ceo, revenue],
+freshness=recent`, a `result_limit` override of 250 (capped at 50 by
+`_MAX_RESULT_LIMIT_OVERRIDE`), and the Search Strategy Engine expands this
+into multiple differently-worded queries rather than searching the raw
+sentence verbatim.
+
+**Bugs found and fixed via live testing against the running app (not
+caught by the SQLite-backed unit tests written first):**
+
+1. **Substring keyword-matching order bug.** `_match_keywords` iterated a
+   canonical entry's surface forms in table-declaration order; several
+   entries have one surface form that is a literal substring of another
+   for the *same* canonical value (e.g. `"cameroon"` inside
+   `"cameroonian"`), so the shorter, less specific form always matched
+   first regardless of which one was actually in the text. Fixed by
+   checking `sorted(surface_forms, key=len, reverse=True)` — longest
+   candidate first.
+2. **Missing keyword variant.** `"founding year"` (a completely ordinary
+   phrasing) did not match the `founded_year` attribute — only `"founded"`
+   and `"established"` were in the table. Added `"founding"` as a surface
+   form.
+3. **Result-limit regex too strict.** The original pattern required the
+   number immediately adjacent to the noun (`\d+\s+companies`), which
+   missed extremely common phrasing with an adjective in between — "250
+   **fintech** companies" — entirely. This was only caught by manually
+   exercising a realistic query against the live app; none of the unit
+   tests written beforehand happened to include an adjective in that
+   position. Fixed by allowing 0–2 filler words between the number and the
+   noun, then added regression tests for both the fix and a negative case
+   (`"250 people work at these growing companies"` → `None`, since 5
+   filler words exceeds the cap and the number isn't actually a
+   result-count in that sentence).
+
+Each of these three is a case where the SQLite/unit-test suite, written
+against the same assumptions as the implementation, could not have caught
+the bug — only running the real parser against unscripted, realistic input
+did. This is the same pattern Sessions 1–2 found with real-Postgres
+testing, applied here to real-input testing instead.
+
+**REMAINING** — the parser is a fixed curated keyword table (see
+`keywords.py`) — it does not learn new geographies/industries/signals and
+will silently produce an empty match for a term outside its tables (an
+explicit design tradeoff for this phase: no LLM in the parsing path yet,
+see `ARCHITECTURE.md` §7). `build_queries`' 4-query cap is a fixed
+constant, not tuned against real search-provider result quality yet.
+`docker compose up` still unverified in this sandbox (no Docker daemon),
+same as Sessions 1–2.
+
+**NEXT** — per `AUDIT_BPO_CRM.md`'s approved phase table: Phase 3 (Crawler
+Engine — adaptive strategy, goal-driven prioritization) or the reordered
+CRM Integration phase, pending direction from whoever's driving next.
+
 ## Phase 1 — Foundation
 
 **Scope delivered:** monorepo layout; FastAPI app factory with health check

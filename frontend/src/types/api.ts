@@ -38,12 +38,25 @@ export type ResearchStatus =
   | "completed"
   | "failed";
 
+export interface ResearchObjective {
+  target_entities: string[];
+  geography: string[];
+  industry: string[];
+  company_size_min: number | null;
+  company_size_max: number | null;
+  required_attributes: string[];
+  signals: string[];
+  freshness: string;
+  matched_keywords: Record<string, string[]>;
+}
+
 export interface ResearchJob {
   id: string;
   query: string;
   status: ResearchStatus;
   mode: ResearchMode;
   config: Record<string, unknown>;
+  objective: ResearchObjective;
   error: string | null;
   created_at: string;
   started_at: string | null;

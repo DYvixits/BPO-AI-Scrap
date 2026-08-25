@@ -4,6 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.engines.query_intelligence.objective import ResearchObjective
 from app.models.research import ResearchMode, ResearchStatus
 
 
@@ -27,6 +28,7 @@ class ResearchJobOut(BaseModel):
     status: ResearchStatus
     mode: ResearchMode
     config: dict[str, Any]
+    objective: ResearchObjective
     error: str | None
     created_at: datetime
     started_at: datetime | None
