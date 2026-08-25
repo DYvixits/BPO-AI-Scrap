@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.deps import AuthContext, get_current_auth
 from app.core.redis import get_redis_pool, research_channel
-from app.repositories import research_repository
+from app.repositories import entity_repository, research_repository
+from app.schemas.entity import CompanyOut
 from app.schemas.research import (
     ResearchCreateRequest,
     ResearchEventOut,
@@ -78,6 +79,28 @@ async def get_research_results(
         db, organization_id=auth.organization_id, job_id=job_id
     )
     return [ResearchResultOut.model_validate(r) for r in results]
+
+
+@router.get("/{job_id}/companies", response_model=list[CompanyOut])
+async def get_research_companies(
+    job_id: UUID,
+    auth: AuthContext = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+) -> list[CompanyOut]:
+    """Entity Resolution's output for this job (app/engines/entity_
+    resolution): every crawled page grouped into the company it was
+    resolved to belong to, with the literal name/domain variants
+    (`aliases`) that justified each grouping. Empty until the job reaches
+    CRAWLING's end — see the `entities.resolved` event."""
+    job = await research_repository.get_research_job(
+        db, organization_id=auth.organization_id, job_id=job_id
+    )
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Research job not found")
+    companies = await entity_repository.list_companies_for_job(
+        db, organization_id=auth.organization_id, job_id=job_id
+    )
+    return [CompanyOut.model_validate(c) for c in companies]
 
 
 @router.websocket("/{job_id}/ws")

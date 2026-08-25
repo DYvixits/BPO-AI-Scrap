@@ -64,6 +64,25 @@ async def test_results_empty_before_pipeline_runs(client, auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_companies_empty_before_pipeline_runs(client, auth_headers):
+    create = await client.post(
+        "/api/v1/research", json={"query": "Nigerian logistics startups"}, headers=auth_headers
+    )
+    job_id = create.json()["id"]
+    companies = await client.get(f"/api/v1/research/{job_id}/companies", headers=auth_headers)
+    assert companies.status_code == 200
+    assert companies.json() == []
+
+
+@pytest.mark.asyncio
+async def test_companies_for_unknown_research_returns_404(client, auth_headers):
+    response = await client.get(
+        "/api/v1/research/00000000-0000-0000-0000-000000000000/companies", headers=auth_headers
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_organizations_cannot_see_each_others_research(client, auth_headers):
     other_org = await client.post(
         "/api/v1/auth/register",
@@ -88,6 +107,11 @@ async def test_organizations_cannot_see_each_others_research(client, auth_header
     # SECURITY.md documents.
     cross_org_get = await client.get(f"/api/v1/research/{job_id}", headers=other_headers)
     assert cross_org_get.status_code == 404
+
+    cross_org_companies = await client.get(
+        f"/api/v1/research/{job_id}/companies", headers=other_headers
+    )
+    assert cross_org_companies.status_code == 404
 
     other_listing = await client.get("/api/v1/research", headers=other_headers)
     assert all(job["id"] != job_id for job in other_listing.json())

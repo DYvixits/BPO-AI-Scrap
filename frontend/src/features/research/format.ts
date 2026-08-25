@@ -51,6 +51,8 @@ export function describeEvent(event: ResearchEvent): string {
           : "stopped finding anything new";
       return `Crawl stopped early after ${payload.pages_crawled} page${payload.pages_crawled === 1 ? "" : "s"} — ${reason}`;
     }
+    case "entities.resolved":
+      return `Grouped results into ${payload.count} compan${payload.count === 1 ? "y" : "ies"}`;
     case "research.completed":
       return `Done — ${payload.result_count} result${payload.result_count === 1 ? "" : "s"} found`;
     case "research.failed":

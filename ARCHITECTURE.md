@@ -35,16 +35,23 @@
           │  Engine    │ │  Engine    │ │  Engine    │  main-content text +
           │(provider   │ │(httpx, SSRF│ │(trafilatura│  structured.py (JSON-LD,
           │ abstraction│ │ guarded)   │ │ + bs4/lxml)│  OG tags, contact info) —
-          └─────▲──────┘ └──────┬─────┘ └────────────┘  dedup.py's near-duplicate
-                │               │ same-domain             check runs against pass 1's
-                │               │ links found on          text (URL-normalization
-                │               │ each crawled page       dedup runs earlier, in the
-                │        ┌──────▼──────┐                  frontier itself)
+          └─────▲──────┘ └──────┬─────┘ └──────┬─────┘  dedup.py's near-duplicate
+                │               │ same-domain           │ check runs against pass 1's
+                │               │ links found on         │ text (URL-normalization
+                │               │ each crawled page       │ dedup runs earlier, in the
+                │        ┌──────▼──────┐                  │ frontier itself)
                 │        │  Crawl      │  NextBestURL priority frontier:
                 │        │Prioritization│ score_candidate() ranks pages by
                 │        │  (frontier) │ objective fit; InformationGain-
                 │        └─────────────┘ Tracker stops the crawl early once
-                │                        required_attributes are satisfied
+                │                        required_attributes are satisfied  │
+                │                                                           ▼
+                │                                                   ┌───────────────┐
+                │                                                   │    Entity      │  runs once, after
+                │                                                   │  Resolution    │  crawling ends: groups
+                │                                                   │   Engine       │  pages into Company
+                │                                                   └───────────────┘  rows (same-domain, then
+                │                                                                       cross-domain name match)
                 │ N queries (deduped by URL)
           ┌─────┴──────┐
           │  Search    │  builds up to MAX_QUERIES=4 targeted
@@ -110,9 +117,12 @@ bpo-ai-scrap/
 │   │   │   ├── crawler/            # HTTP crawler + SSRF guard + link discovery
 │   │   │   │                       # + goal-driven prioritization (NextBestURL)
 │   │   │   │                       # + URL normalization (dedup layer 1)
-│   │   │   └── extraction/         # trafilatura main-content text pass +
-│   │   │                           # structured.py (JSON-LD/OG/contact, pass 2)
-│   │   │                           # + dedup.py (near-duplicate shingle/Jaccard)
+│   │   │   ├── extraction/         # trafilatura main-content text pass +
+│   │   │   │                       # structured.py (JSON-LD/OG/contact, pass 2)
+│   │   │   │                       # + dedup.py (near-duplicate shingle/Jaccard)
+│   │   │   └── entity_resolution/  # resolver.py — groups crawled pages into
+│   │   │                           # Company rows (same-domain, then
+│   │   │                           # cross-domain exact name match)
 │   │   ├── workers/
 │   │   │   ├── worker.py           # arq WorkerSettings
 │   │   │   └── tasks/research.py   # the research pipeline job
@@ -192,18 +202,36 @@ crawl_pages
 
 research_results
   id (uuid pk), organization_id fk, research_job_id fk, crawl_page_id fk (nullable),
+  company_id fk (nullable, → companies; set once by the Entity Resolution
+    Engine after crawling ends — null for results that predate resolution
+    or whose page yielded no usable company name),
   title, url, snippet, confidence (float, currently source/freshness-based —
   see PHASE_PLAN §6 for the full multi-source Truth Engine), created_at
+
+companies
+  id (uuid pk), organization_id fk, research_job_id fk, canonical_name (text),
+  primary_domain, description (nullable),
+  match_confidence (float — 1.0 for a single-domain company, 0.7 for a
+    cross-domain merge on a name match; a disclosed heuristic number, not a
+    verified claim, see SECURITY.md), created_at
+  # scoped per research_job, not deduplicated across jobs or the wider org
+
+entity_aliases
+  id (uuid pk), organization_id fk, company_id fk, alias_type (text:
+    "name" | "domain"), value, source_url, created_at
+  # every distinct candidate name and every merged domain, with the page
+  # it came from — the resolver's evidence trail
 ```
 
 All tables use UUID primary keys and are scoped by `organization_id` for
 tenant isolation. `organization_id` is denormalized directly onto
-`research_events`/`sources`/`crawl_pages`/`research_results` (rather than
-living only on `research_jobs` and requiring a join) for two reasons: it
-keeps app-layer filters and indexes simple, and it's what makes PostgreSQL
-Row-Level Security on those four tables a plain equality check instead of a
-subquery — see SECURITY.md §"Tenant isolation" for the full RLS design,
-including why `research_jobs` itself is deliberately excluded from RLS.
+`research_events`/`sources`/`crawl_pages`/`research_results`/`companies`/
+`entity_aliases` (rather than living only on `research_jobs` and requiring a
+join) for two reasons: it keeps app-layer filters and indexes simple, and
+it's what makes PostgreSQL Row-Level Security on those tables a plain
+equality check instead of a subquery — see SECURITY.md §"Tenant isolation"
+for the full RLS design, including why `research_jobs` itself is
+deliberately excluded from RLS.
 
 `research_jobs.status` state machine (subset of the full 71-state spec target):
 
@@ -235,6 +263,7 @@ POST   /api/v1/research            → create + enqueue a research job
 GET    /api/v1/research            → list jobs for caller's org
 GET    /api/v1/research/{id}       → job detail + status
 GET    /api/v1/research/{id}/results
+GET    /api/v1/research/{id}/companies  → resolved companies for this job
 WS     /api/v1/research/{id}/ws    → live progress events
 
 GET    /api/v1/health              → liveness/readiness (checks DB + Redis)
@@ -317,6 +346,18 @@ token's claims — a user can never read another organization's job.
   differ only by a timestamp or session token embedded in otherwise
   identical markup, which exact-hash matching alone would miss. Scoped to
   one job at a time, not a cross-job or cross-tenant cache.
+- `app/engines/entity_resolution/resolver.py::resolve_companies` — Phase 5:
+  a disclosed two-step heuristic, not ML/fuzzy matching. Step 1 groups
+  crawled pages by registrable domain (already correct by construction,
+  since the crawler only follows same-domain links). Step 2 merges
+  domain-groups into one company when their best-guess names — read from
+  JSON-LD `Organization`, then Open Graph site name, then page title, in
+  that order, same pattern as `structured.py` — are identical after
+  normalization (lowercased, legal-suffix-stripped, punctuation-stripped).
+  `match_confidence` is 1.0 for an unmerged single-domain company, 0.7 for
+  a cross-domain name-match merge — a disclosed number, not a verified
+  claim. Runs once per job, after crawling ends, in
+  `app/workers/tasks/research.py`.
 
 ## 8. Risks identified going in
 

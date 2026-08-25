@@ -51,6 +51,10 @@ class ResearchResultOut(BaseModel):
     url: str
     snippet: str | None
     confidence: float
+    # Set by the Entity Resolution Engine (app/engines/entity_resolution)
+    # once crawling ends — which resolved company this page belongs to.
+    # See GET /research/{id}/companies for the full company record.
+    company_id: UUID | None = None
 
 
 class ResearchJobDetailOut(ResearchJobOut):

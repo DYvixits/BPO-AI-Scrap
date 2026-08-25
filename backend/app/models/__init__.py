@@ -1,3 +1,4 @@
+from app.models.entity import Company, EntityAlias
 from app.models.organization import Organization, OrganizationMember, Role
 from app.models.research import (
     CrawlPage,
@@ -12,7 +13,9 @@ from app.models.tenant import TenantQuota, TenantTier
 from app.models.user import User
 
 __all__ = [
+    "Company",
     "CrawlPage",
+    "EntityAlias",
     "Organization",
     "OrganizationMember",
     "ResearchEvent",

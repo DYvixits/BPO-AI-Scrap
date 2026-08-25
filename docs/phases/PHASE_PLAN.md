@@ -455,6 +455,102 @@ Resolution) is the next unstarted phase in sequence, or the still-open
 remainders of Phase 2 (multi-provider source discovery) and Phase 3
 (adaptive fetcher), pending direction from whoever's driving next.
 
+## Session 6 verification report — Entity Resolution
+
+Scope: `AUDIT_BPO_CRM.md`'s Phase 5. Same implement→test→report discipline
+as Sessions 1–5.
+
+**IMPLEMENTED** — `app/engines/entity_resolution/resolver.py::
+resolve_companies`, a disclosed two-step heuristic (no ML, no fuzzy string
+similarity beyond exact match on a normalized name): (1) pages are grouped
+by registrable domain — already correct by construction, since the
+crawler only follows same-domain links (`crawler/links.py`); (2)
+domain-groups are merged into one company when their best-guess names —
+read from JSON-LD `Organization`/`LocalBusiness`, then Open Graph site
+name, then the first segment of the OG title or page title, in that
+preference order (the same "most structured signal first" pattern as
+`extraction/structured.py`) — are identical after normalization
+(lowercased, legal-suffix-stripped e.g. "Inc"/"Ltd"/"GmbH", punctuation-
+stripped). New tables `companies` and `entity_aliases` (migration `0005`,
+RLS enabled with the same `tenant_isolation` policy as migration `0002`'s
+tables) plus a nullable `research_results.company_id` FK. The resolver
+runs once per job in `app/workers/tasks/research.py`, after the crawl loop
+ends and before `EXTRACTING`/`COMPLETED`, reading every successfully
+fetched `crawl_pages` row for the job. `match_confidence` is `1.0` for an
+unmerged single-domain company (nothing to disambiguate) and `0.7` for a
+cross-domain name-match merge — a disclosed number, not a verified claim
+(SECURITY.md). New `GET /research/{id}/companies` endpoint and
+`entities.resolved` WS/event-log event (`{"count": N}`). Frontend: results
+on `ResearchDetailPage` are now grouped under a `CompanyGroup` header
+(canonical name, description, and a "N sources merged · X% match
+confidence" badge shown only when more than one domain was merged);
+ungrouped results (no resolvable name) render under a plain "Not grouped
+into a company" label instead of disappearing or crashing.
+
+**TESTED** — 15 new tests: 12 pure-logic unit tests for the resolver
+(`tests/test_entity_resolution.py` — name normalization, JSON-LD/OG/title
+fallback priority, single-domain grouping, cross-domain merge on matching
+names, no-merge on different names, alias recording, empty input) and 3
+full worker-pipeline tests with the network layer stubbed
+(`tests/test_entity_resolution_pipeline.py` — same-domain pages resolve
+into one company at confidence 1.0, two different domains with matching
+site names merge at confidence 0.7, zero search hits produce zero
+companies). Plus 2 new API tests (`tests/test_research.py` —
+`/companies` is empty before the pipeline runs, 404s for an unknown job,
+and is included in the existing cross-tenant-isolation test alongside
+`/results`). 118/118 backend tests pass on SQLite (5 skipped —
+Postgres-only RLS tests); 123/123 pass against a real local PostgreSQL
+with migrations `0001`–`0005` applied and the suite pointed at the
+non-superuser `bpo_app` role (mirroring CI's least-privilege setup, see
+SECURITY.md) — i.e. every Entity Resolution write in the pipeline tests
+genuinely went through RLS enforcement on `companies`/`entity_aliases`,
+not just SQLite with RLS structurally absent. No dedicated per-table RLS
+unit test was added for the two new tables: `tests/test_rls.py` exercises
+the fail-closed/correct-context/wrong-context/select-scoping behavior
+against one representative table (`research_events`), and `companies`/
+`entity_aliases` reuse that exact same policy DDL, verbatim, from
+migration `0002` — the pipeline tests passing under `bpo_app` is the
+integration-level evidence that the policy actually applies to them, not
+just that the DDL ran without error. Frontend: `npm run build` and
+`npm run lint` both clean (the two pre-existing Fast-Refresh warnings in
+`badge.tsx`/`button.tsx` predate this session).
+
+**WORKING** — confirmed via the pipeline tests (real DB writes, real
+resolver logic, only network stubbed — same sandbox egress constraint as
+every prior session) **and** a live visual check: seeded a `COMPLETED`
+research job directly via the app's own SQLAlchemy models (a real search→
+crawl run isn't reachable in this sandbox) with one single-domain company,
+one two-domain merged company, and one ungrouped result, then loaded
+`ResearchDetailPage` in a real Chromium browser (Playwright) against a
+running FastAPI + Vite dev stack. The screenshot caught a real, if minor,
+layout bug the pipeline/unit tests couldn't: the company header's name,
+badge, and description shared one `flex items-center` row with no wrap,
+so a company with a two-word name and a description pushed the badge and
+description apart with an ugly gap. Fixed by wrapping the name/badge onto
+their own flex-wrap row and moving the description to its own line below
+— same category of bug the Session 1 frontend event-timeline fix caught,
+confirming visual verification still earns its cost here.
+
+**REMAINING** — Resolution only covers companies; the master spec's
+person-entity resolution (same person across pages/sources) is out of
+scope for this session. The name-match merge step is a strict exact-match
+on normalized text — two real variants that don't reduce to the same
+normalized string (e.g. an abbreviation or a rebrand) will not merge; this
+is a deliberate false-splits-over-false-merges tradeoff (see the
+resolver's module docstring), not an oversight, but it means recall on
+cross-domain merges is conservative. `Company`/`EntityAlias` are scoped
+per `research_job`, not deduplicated across a tenant's jobs or over time —
+the same company researched twice produces two separate `Company` rows.
+No confidence value between 0.7 and 1.0 exists yet (e.g. a 3+-domain merge
+isn't scored any differently from a 2-domain one) — flagged here rather
+than inventing a formula this session can't substantiate.
+
+**NEXT** — per `AUDIT_BPO_CRM.md`'s approved phase table: Phase 6
+(Verification + Evidence) is the next unstarted phase in sequence, or the
+still-open remainders of Phase 2 (multi-provider source discovery) and
+Phase 3 (adaptive Playwright-based fetcher), pending direction from
+whoever's driving next.
+
 ## Phase 1 — Foundation
 
 **Scope delivered:** monorepo layout; FastAPI app factory with health check

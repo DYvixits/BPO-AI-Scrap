@@ -102,11 +102,42 @@ Same shape plus `events: ResearchEvent[]` (the append-only progress log).
 the two cases are indistinguishable by design (no cross-tenant existence
 leak).
 
+### `GET /research/{id}/companies` (Phase 5)
+
+```json
+[
+  {
+    "id": "uuid",
+    "canonical_name": "Kesho Finance",
+    "primary_domain": "kesho.example.com",
+    "description": "Mobile lending platform for small businesses in East Africa.",
+    "match_confidence": 0.7,
+    "aliases": [
+      { "alias_type": "domain", "value": "kesho.example.com", "source_url": "https://kesho.example.com" },
+      { "alias_type": "domain", "value": "crunchbase.example.com", "source_url": "https://crunchbase.example.com/kesho" },
+      { "alias_type": "name", "value": "Kesho Finance", "source_url": "https://kesho.example.com" }
+    ]
+  }
+]
+```
+
+Companies produced by the Entity Resolution Engine (`app/engines/
+entity_resolution`) once crawling ends — groups pages that refer to the
+same real-world company (e.g. a company's own site plus its Crunchbase
+profile) instead of surfacing every crawled page as an unrelated flat
+result. `match_confidence` is `1.0` for a company built from a single
+domain (nothing to disambiguate) and `0.7` when pages from different
+domains were merged on a name match alone — a disclosed heuristic number,
+not a verified claim (see `SECURITY.md`). Always empty until `status ==
+"completed"`; 404 under the same rules as `GET /research/{id}`.
+`research_results[].company_id` (nullable) links each result to one of
+these companies.
+
 ### `GET /research/{id}/results`
 
 ```json
 [
-  { "id": "uuid", "title": "Company X", "url": "https://...", "snippet": "...", "confidence": 0.8 }
+  { "id": "uuid", "title": "Company X", "url": "https://...", "snippet": "...", "confidence": 0.8, "company_id": "uuid or null" }
 ]
 ```
 
@@ -121,8 +152,8 @@ Browser WebSocket clients can't set headers, so auth is a query param:
 `wss://.../research/{id}/ws?token=<access_token>`. Streams the same event
 kinds as the `events` array on the job (`status.changed, search.completed,
 sources.discovered, page.completed, page.failed, crawl.expanded,
-crawl.stopped_early, research.completed, research.failed`), as JSON text
-frames, as they happen.
+crawl.stopped_early, entities.resolved, research.completed,
+research.failed`), as JSON text frames, as they happen.
 
 `page.completed`'s payload also carries `duplicate_reason` (Phase 4):
 `"exact_hash"` when the page's content is byte-identical to one already
@@ -141,6 +172,11 @@ N}`) fires at most once per job, only when the crawl stopped before
 exhausting its `max_pages` budget — either because every `required_attribute`
 the query asked for was found, or because a run of pages in a row found
 nothing new. See `ARCHITECTURE.md` §7 for the scoring/tracking behind both.
+
+`entities.resolved` (`{"count": N}`, Phase 5) fires at most once per job,
+after the crawl loop ends, once the Entity Resolution Engine has grouped
+crawled pages into `N` companies — `0` if no page yielded a usable company
+name. See `GET /research/{id}/companies` above.
 
 ## Health
 

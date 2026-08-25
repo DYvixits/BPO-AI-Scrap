@@ -143,6 +143,14 @@ class ResearchResult(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     crawl_page_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("crawl_pages.id", ondelete="SET NULL"), nullable=True
     )
+    # Set by the Entity Resolution Engine after crawling finishes (app/
+    # engines/entity_resolution) — which resolved Company this result's
+    # page belongs to. Nullable: resolution runs once, after the fact: a
+    # result that predates it, or whose page yielded no usable company
+    # name, has none.
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     snippet: Mapped[str | None] = mapped_column(Text, nullable=True)

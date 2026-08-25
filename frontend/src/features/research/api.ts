@@ -1,5 +1,11 @@
 import { apiRequest } from "@/services/api";
-import type { ResearchJob, ResearchJobDetail, ResearchMode, ResearchResult } from "@/types/api";
+import type {
+  Company,
+  ResearchJob,
+  ResearchJobDetail,
+  ResearchMode,
+  ResearchResult,
+} from "@/types/api";
 
 export interface CreateResearchInput {
   query: string;
@@ -21,4 +27,8 @@ export function getResearch(id: string) {
 
 export function getResearchResults(id: string) {
   return apiRequest<ResearchResult[]>(`/research/${id}/results`);
+}
+
+export function getResearchCompanies(id: string) {
+  return apiRequest<Company[]>(`/research/${id}/companies`);
 }

@@ -79,4 +79,20 @@ export interface ResearchResult {
   url: string;
   snippet: string | null;
   confidence: number;
+  company_id: string | null;
+}
+
+export interface EntityAlias {
+  alias_type: "name" | "domain";
+  value: string;
+  source_url: string;
+}
+
+export interface Company {
+  id: string;
+  canonical_name: string;
+  primary_domain: string;
+  description: string | null;
+  match_confidence: number;
+  aliases: EntityAlias[];
 }
