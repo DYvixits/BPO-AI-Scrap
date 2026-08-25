@@ -335,7 +335,7 @@ this as a proposal to confirm, not a decision made unilaterally**:
 |---|---|---|
 | 0 | Audit (this document) | ✅ done |
 | 1 | Foundation + multitenancy hardening (RLS, tenant tiers/quotas) | ✅ Done — see `docs/phases/PHASE_PLAN.md`'s Session 2 verification report |
-| 2 | Research Orchestrator (NL→`ResearchObjective`, multi-query Search Strategy Engine, multi-provider Source Discovery) | Basic orchestrator ✅ done; NL parsing + multi-query + multi-provider not started |
+| 2 | Research Orchestrator (NL→`ResearchObjective`, multi-query Search Strategy Engine, multi-provider Source Discovery) | NL→`ResearchObjective` parsing + multi-query Search Strategy Engine ✅ done — see `docs/phases/PHASE_PLAN.md`'s Session 3 verification report; multi-provider Source Discovery not started (still DuckDuckGo-only) |
 | 3 | Crawler Engine (adaptive strategy, goal-driven prioritization, NextBestURL, information gain, early stopping) | HTTP-only crawler ✅ done; adaptive/prioritization not started |
 | 4 | Extraction + Deduplication (multi-pass extraction, 6-level dedup) | Single-pass extraction + exact-hash dedup ✅ done; rest not started |
 | 5 | Entity Resolution | Not started |

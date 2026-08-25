@@ -46,6 +46,10 @@ class ResearchJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         pg_enum(ResearchMode, "research_mode"), default=ResearchMode.BALANCED, nullable=False
     )
     config: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # The structured plan the Query Intelligence Engine parsed the NL query
+    # into (app/engines/query_intelligence) — a serialized ResearchObjective.
+    # Populated once at job creation, never mutated afterward.
+    objective: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

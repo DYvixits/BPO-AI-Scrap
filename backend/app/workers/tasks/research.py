@@ -29,7 +29,10 @@ from app.core.config import get_settings
 from app.core.redis import get_redis_pool, publish_research_event
 from app.engines.crawler.fetcher import FetchResult, PageFetcher
 from app.engines.extraction.content import ExtractedContent, extract_content
+from app.engines.query_intelligence.objective import ResearchObjective
+from app.engines.search.base import SearchHit
 from app.engines.search.duckduckgo import DuckDuckGoSearchProvider
+from app.engines.search_strategy.strategy import build_queries
 from app.models.research import ResearchStatus
 from app.repositories import research_repository
 from app.services.confidence import basic_relevance_score
@@ -92,10 +95,26 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
     try:
         max_results = int(job.config.get("max_results", 6))
 
-        # --- SEARCH ---
+        # --- SEARCH (multi-query — master spec §5: a single literal query
+        # is never treated as sufficient) ---
         await _set_status(organization_id, job_id, ResearchStatus.SEARCHING)
-        hits = await DuckDuckGoSearchProvider().search(job.query, max_results=max_results)
-        await _emit(organization_id, job_id, "search.completed", {"count": len(hits)})
+        objective = ResearchObjective.model_validate(job.objective or {})
+        queries = build_queries(job.query, objective)
+        search_provider = DuckDuckGoSearchProvider()
+        per_query_hits: list[list[SearchHit]] = await asyncio.gather(
+            *[search_provider.search(q, max_results=max_results) for q in queries]
+        )
+        seen_urls: set[str] = set()
+        hits: list[SearchHit] = []
+        for query_hits in per_query_hits:
+            for hit in query_hits:
+                if hit.url not in seen_urls:
+                    seen_urls.add(hit.url)
+                    hits.append(hit)
+        hits = hits[:max_results]
+        await _emit(
+            organization_id, job_id, "search.completed", {"count": len(hits), "queries": queries}
+        )
 
         if not hits:
             await _set_status(organization_id, job_id, ResearchStatus.COMPLETED)

@@ -35,7 +35,19 @@
           │  Engine    │ │  Engine    │ │  Engine    │
           │(provider   │ │(httpx, SSRF│ │(trafilatura│
           │ abstraction│ │ guarded)   │ │ + bs4/lxml)│
-          └────────────┘ └────────────┘ └────────────┘
+          └─────▲──────┘ └────────────┘ └────────────┘
+                │ N queries (deduped by URL)
+          ┌─────┴──────┐
+          │  Search    │  builds up to MAX_QUERIES=4 targeted
+          │  Strategy  │  queries from a ResearchObjective
+          │  Engine    │  (app/engines/search_strategy)
+          └─────▲──────┘
+                │ ResearchObjective
+          ┌─────┴──────┐
+          │   Query    │  heuristic NL parser — no LLM call yet
+          │Intelligence│  (industry/geography/size/signals/...),
+          │  Engine    │  runs once at job creation, before enqueue
+          └────────────┘  (app/engines/query_intelligence)
 ```
 
 `*` React Flow (research map / workflow designer) ships in Phase 7/Phase 15
@@ -83,6 +95,8 @@ bpo-ai-scrap/
 │   │   ├── repositories/           # DB access, one per aggregate
 │   │   ├── services/               # orchestration / business logic
 │   │   ├── engines/
+│   │   │   ├── query_intelligence/ # NL query -> ResearchObjective (heuristic, no LLM)
+│   │   │   ├── search_strategy/    # ResearchObjective -> up to 4 targeted queries
 │   │   │   ├── search/             # SearchProvider abstraction + DuckDuckGo impl
 │   │   │   ├── crawler/            # HTTP crawler + SSRF guard
 │   │   │   └── extraction/         # trafilatura/bs4-based content extraction
@@ -136,6 +150,11 @@ research_jobs
   query (text, the natural-language request), status (enum state machine),
   mode (enum: quick|balanced|deep|verified|investigation|custom),
   config (jsonb — depth, max_pages, min_sources, ...),
+  objective (jsonb — the ResearchObjective the Query Intelligence Engine
+    parsed the query into: target_entities, geography, industry,
+    company_size_min/max, required_attributes, signals, freshness, and
+    matched_keywords for explainability; set once at creation, never
+    mutated; rendered client-side as "Understood as:" chips),
   created_at, started_at, completed_at, error
 
 research_events
@@ -222,6 +241,15 @@ token's claims — a user can never read another organization's job.
   a new class, no caller changes.
 - `app/engines/crawler/base.py::PageFetcher` — HTTP-only today (httpx);
   Phase 4 adds a Playwright-backed implementation selected adaptively per URL.
+- `app/engines/query_intelligence/parser.py::parse_query` — keyword-table
+  driven (`keywords.py`), deliberately not an LLM call in this phase (see
+  PHASE_PLAN.md — the AI Gateway is sequenced after Phase 6 Verification
+  exists, so early scoring never depends on an unaudited black box). Every
+  match is recorded in `matched_keywords`, so the parse is explainable by
+  construction rather than by after-the-fact justification.
+- `app/engines/search_strategy/strategy.py::build_queries` — turns one
+  `ResearchObjective` into up to `MAX_QUERIES=4` targeted search queries;
+  results across queries are deduplicated by URL before crawling.
 
 ## 8. Risks identified going in
 
