@@ -35,7 +35,15 @@
           │  Engine    │ │  Engine    │ │  Engine    │
           │(provider   │ │(httpx, SSRF│ │(trafilatura│
           │ abstraction│ │ guarded)   │ │ + bs4/lxml)│
-          └─────▲──────┘ └────────────┘ └────────────┘
+          └─────▲──────┘ └──────┬─────┘ └────────────┘
+                │               │ same-domain links found on
+                │               │ each crawled page
+                │        ┌──────▼──────┐
+                │        │  Crawl      │  NextBestURL priority frontier:
+                │        │Prioritization│ score_candidate() ranks pages by
+                │        │  (frontier) │ objective fit; InformationGain-
+                │        └─────────────┘ Tracker stops the crawl early once
+                │                        required_attributes are satisfied
                 │ N queries (deduped by URL)
           ┌─────┴──────┐
           │  Search    │  builds up to MAX_QUERIES=4 targeted
@@ -98,7 +106,8 @@ bpo-ai-scrap/
 │   │   │   ├── query_intelligence/ # NL query -> ResearchObjective (heuristic, no LLM)
 │   │   │   ├── search_strategy/    # ResearchObjective -> up to 4 targeted queries
 │   │   │   ├── search/             # SearchProvider abstraction + DuckDuckGo impl
-│   │   │   ├── crawler/            # HTTP crawler + SSRF guard
+│   │   │   ├── crawler/            # HTTP crawler + SSRF guard + link discovery
+│   │   │   │                       # + goal-driven prioritization (NextBestURL)
 │   │   │   └── extraction/         # trafilatura/bs4-based content extraction
 │   │   ├── workers/
 │   │   │   ├── worker.py           # arq WorkerSettings
@@ -149,7 +158,10 @@ research_jobs
   id (uuid pk), organization_id fk, created_by fk(user),
   query (text, the natural-language request), status (enum state machine),
   mode (enum: quick|balanced|deep|verified|investigation|custom),
-  config (jsonb — depth, max_pages, min_sources, ...),
+  config (jsonb — max_results: how many search hits seed the crawl
+    frontier; max_pages: the crawl's actual page budget, since Phase 3 the
+    worker can follow same-domain links beyond the initial hits, not just
+    re-fetch them; min_sources; ...),
   objective (jsonb — the ResearchObjective the Query Intelligence Engine
     parsed the query into: target_entities, geography, industry,
     company_size_min/max, required_attributes, signals, freshness, and
@@ -191,6 +203,14 @@ including why `research_jobs` itself is deliberately excluded from RLS.
 CREATED → QUEUED → SEARCHING → CRAWLING → EXTRACTING → COMPLETED
                                                        ↘ FAILED
 ```
+
+Since Phase 3, crawling and extraction happen together per page (each
+wave of the priority frontier fetches, extracts, and stores before the
+next wave is even scored) — there's no longer a real "all fetching done,
+now extracting" batch boundary. `CRAWLING` covers the whole frontier loop;
+`EXTRACTING` is emitted as a brief final step once it ends, so the status
+sequence stays honest about what's actually happening rather than
+claiming a separate phase that no longer exists as a batch.
 
 ## 5. API contract (Phase 1–3)
 
@@ -250,6 +270,23 @@ token's claims — a user can never read another organization's job.
 - `app/engines/search_strategy/strategy.py::build_queries` — turns one
   `ResearchObjective` into up to `MAX_QUERIES=4` targeted search queries;
   results across queries are deduplicated by URL before crawling.
+- `app/engines/crawler/links.py::extract_links` — parses same-registrable-
+  domain `<a href>` links out of a fetched page's HTML (deduplicated,
+  fragment-stripped, asset/mailto/tel/javascript links filtered out). Feeds
+  the crawl frontier; deliberately does not cross domains — that's Source
+  Discovery's job (still a Phase 2 open item), not link-following's.
+- `app/engines/crawler/prioritization.py::score_candidate` — NextBestURL
+  scoring: ranks a candidate URL by how well its path/anchor text matches
+  the objective's `required_attributes` (a curated, disclosed keyword table,
+  `ATTRIBUTE_PAGE_SIGNALS`, in the same spirit as `keywords.py`), decayed by
+  crawl depth. `InformationGainTracker` reuses the Query Intelligence
+  Engine's own `ATTRIBUTES` keyword table to detect, per crawled page,
+  which required attributes were actually found — the worker stops a job
+  early once every required attribute has been satisfied, or after a run
+  of pages that found nothing new (`_STALL_LIMIT`/`_STALL_FLOOR` in
+  `app/workers/tasks/research.py`). Disabled entirely (falls back to the
+  page-budget-only behavior from before this phase) when the objective has
+  no `required_attributes` to look for.
 
 ## 8. Risks identified going in
 

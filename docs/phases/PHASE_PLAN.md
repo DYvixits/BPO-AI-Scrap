@@ -290,6 +290,92 @@ same as Sessions 1–2.
 Engine — adaptive strategy, goal-driven prioritization) or the reordered
 CRM Integration phase, pending direction from whoever's driving next.
 
+## Session 4 verification report — Crawler Engine (link discovery + goal-driven prioritization)
+
+Scope: `AUDIT_BPO_CRM.md`'s Phase 3 — the "adaptive strategy, goal-driven
+prioritization" half of it (NextBestURL scoring, information-gain early
+stopping, same-domain link discovery). Playwright/JS-rendering, sitemap/
+RSS/JSON-LD/PDF handling, and multi-provider source discovery remain
+unstarted — see REMAINING below. Full design rationale in
+`ARCHITECTURE.md` §1/§7 — same implement→test→report discipline as
+Sessions 1–3.
+
+**IMPLEMENTED** — `app/engines/crawler/links.py::extract_links` (same-
+registrable-domain link discovery from a fetched page's HTML, fragment-
+stripped and deduplicated, filtering out mailto/tel/javascript links and
+common asset extensions); `app/engines/crawler/prioritization.py`
+(`score_candidate` — NextBestURL scoring against the objective's
+`required_attributes` via a new `ATTRIBUTE_PAGE_SIGNALS` keyword table,
+decayed by crawl depth; `InformationGainTracker` — reuses the Query
+Intelligence Engine's own `ATTRIBUTES` table to detect, per page, which
+required attributes were actually found). The worker
+(`workers/tasks/research.py`) no longer fetches a flat batch of search
+hits — it runs a priority frontier (a heap scored by `score_candidate`),
+crawling wave-by-wave up to a new `max_pages` config field (distinct from
+`max_results`, which now only sizes the search-hit seed set), expanding
+the frontier with each page's discovered links, and stopping early either
+once every required attribute is found (`objective_satisfied`) or after a
+run of pages that found nothing new (`diminishing_returns`, gated by
+`_STALL_LIMIT`/`_STALL_FLOOR` so a couple of unlucky early picks can't end
+a job prematurely). Two new WebSocket/event kinds, `crawl.expanded` and
+`crawl.stopped_early`, report this — see `docs/API.md`. `MODE_DEFAULTS`
+gained a `max_pages` per mode; the query-text result-limit override (e.g.
+"find 500 companies") now raises `max_pages` alongside `max_results`,
+closing the gap flagged in Session 1's `_MAX_RESULT_LIMIT_OVERRIDE`
+comment ("revisit once goal-driven prioritization makes 'more results' a
+budget decision").
+
+**TESTED** — 27 new automated tests, all SQLite/pure-logic except where
+noted: 9 for `extract_links` (`tests/test_links.py`), 9 for
+`score_candidate`/`InformationGainTracker` (`tests/test_prioritization.py`),
+and 3 full worker-pipeline tests with the network layer stubbed exactly
+like Session 1's `test_research_pipeline.py`
+(`tests/test_crawl_prioritization_pipeline.py`): one proves the crawler
+actually follows a same-domain link to find a required attribute the seed
+page didn't have, one proves a crawl stops the instant the objective is
+satisfied (a discovered-but-unnecessary page is never fetched), one proves
+a crawl stops on diminishing returns before exhausting a 6-page budget
+(forcing `crawler_max_concurrency=1` via monkeypatch so the stall counter
+is checked at page-level granularity, not wave-level). 75/75 tests pass
+total, including all 5 real-Postgres RLS tests re-run against a real local
+Postgres 16 with the same non-superuser `bpo_app` role introduced by the
+RLS least-privilege CI fix (a between-sessions fix, not numbered above —
+see SECURITY.md's "Tenant isolation" section and its own PR for that
+one) — specifically to check that the frontier loop's many more per-page
+`_tenant_session` transactions (one wave can now open several in quick
+succession) didn't regress RLS enforcement. They didn't.
+
+**WORKING** — confirmed via the pipeline tests above, which exercise the
+real frontier/scoring/tracking code end-to-end (only the network calls are
+stubbed): a company homepage that doesn't mention its CEO but links to
+`/about`, which does, gets both pages crawled; a homepage that already
+answers the objective on its own never triggers a crawl of the `/team`
+page it links to; six equally-uninformative candidate pages stop being
+crawled after 3, not 6. A **live** end-to-end run against a real external
+site was not possible this session — the sandbox's egress policy blocks
+general outbound HTTPS, not just the DuckDuckGo host flagged in Session 1
+(confirmed directly: a plain `httpx` request to `https://example.com`
+returns `403 Forbidden` from the environment's own proxy) — so this
+phase's "real infrastructure" testing takes the same shape Session 1's
+pipeline test already established for exactly this constraint: real DB,
+real event log, real scoring/tracking logic, stubbed network boundary.
+
+**REMAINING** — everything else `AUDIT_BPO_CRM.md`'s Phase 3 scopes:
+adaptive strategy selection (a Playwright-backed fetcher for JS-heavy
+pages, chosen per URL — `PageFetcher` stays HTTP-only), sitemap/RSS/
+JSON-LD/PDF discovery, and multi-provider source discovery (still
+DuckDuckGo-only, a Phase 2 item that was never closed either).
+`ATTRIBUTE_PAGE_SIGNALS` is a small curated table like every other
+keyword table in this codebase — modest, not exhaustive, and it will
+silently score a company site with unconventional page naming no higher
+than the baseline. `docker compose up` still unverified in this sandbox
+(no Docker daemon), same as every prior session.
+
+**NEXT** — per `AUDIT_BPO_CRM.md`'s approved phase table: the rest of
+Phase 3 (adaptive fetcher, multi-provider discovery) or Phase 4
+(Extraction + Deduplication — multi-pass extraction, 6-level dedup),
+pending direction from whoever's driving next.
+
 ## Phase 1 — Foundation
 
 **Scope delivered:** monorepo layout; FastAPI app factory with health check

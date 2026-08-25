@@ -39,6 +39,15 @@ export function describeEvent(event: ResearchEvent): string {
       return `Crawled: ${payload.title || payload.url}${payload.duplicate ? " (duplicate, skipped)" : ""}`;
     case "page.failed":
       return `Could not access ${payload.url} — ${payload.error}`;
+    case "crawl.expanded":
+      return `Found ${payload.new_candidates} more page${payload.new_candidates === 1 ? "" : "s"} to consider from ${payload.from}`;
+    case "crawl.stopped_early": {
+      const reason =
+        payload.reason === "objective_satisfied"
+          ? "found what it was looking for"
+          : "stopped finding anything new";
+      return `Crawl stopped early after ${payload.pages_crawled} page${payload.pages_crawled === 1 ? "" : "s"} — ${reason}`;
+    }
     case "research.completed":
       return `Done — ${payload.result_count} result${payload.result_count === 1 ? "" : "s"} found`;
     case "research.failed":
