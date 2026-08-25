@@ -12,6 +12,13 @@ verify → detect contradictions → score confidence → synthesize → present
 evidence. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and
 [docs/phases/PHASE_PLAN.md](./docs/phases/PHASE_PLAN.md) for the build order.
 
+**Product direction:** this platform is being repositioned as commercial
+intelligence & data acquisition for a BPO CRM — the same engine, aimed at
+Fit/Intent/Confidence-scored sales opportunities rather than generic
+research. See [docs/AUDIT_BPO_CRM.md](./docs/AUDIT_BPO_CRM.md) for the
+audit of what's built so far against that direction and the revised phase
+plan; nothing below is invalidated by it, it's additive.
+
 ## Status
 
 **Phase 1 (Foundation) + Phase 2 (Auth) + Phase 3 (Research Core)** are
