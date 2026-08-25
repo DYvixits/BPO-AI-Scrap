@@ -376,6 +376,85 @@ Phase 3 (adaptive fetcher, multi-provider discovery) or Phase 4
 (Extraction + Deduplication — multi-pass extraction, 6-level dedup),
 pending direction from whoever's driving next.
 
+## Session 5 verification report — Extraction + Deduplication
+
+Scope: `AUDIT_BPO_CRM.md`'s Phase 4. The audit's original phrasing calls
+for "6-level dedup" without specifying what the six levels are anywhere in
+this codebase's own docs — rather than invent six to match the label, this
+session implements and honestly documents three real, tested layers, and
+says plainly in REMAINING below that the "6-level" framing isn't something
+this repo has ever concretely defined. Same implement→test→report
+discipline as Sessions 1–4.
+
+**IMPLEMENTED** — A second extraction pass,
+`app/engines/extraction/structured.py::extract_structured_data`, alongside
+trafilatura's existing main-content text pass: parses JSON-LD
+(`schema.org`) blocks, Open Graph / meta description tags, and plain-text
+email/phone matches — every field either literally present in the markup
+or a direct regex match, nothing inferred. Stored on a new
+`crawl_pages.structured_data` JSON column (migration `0004`). Three dedup
+layers, in the order they're checked: (1) `app/engines/crawler/
+normalize.py::normalize_url` — strips tracking params (`utm_*`, `fbclid`,
+`gclid`, ...), sorts remaining query params, strips trailing slashes and
+fragments; used as the crawl frontier's dedup key at push time, so a
+tracking-param variant of an already-queued URL never occupies a frontier
+slot. (2) The existing exact content-hash match (unchanged from Phase
+1–3). (3) `app/engines/extraction/dedup.py::NearDuplicateDetector` — new:
+shingles each page's text into overlapping 5-word sequences and flags a
+page as a near-duplicate once its Jaccard similarity to any already-seen
+page in the same job crosses 0.9. A duplicate by either (2) or (3) is
+still crawled and recorded (`crawl_pages` row, `structured_data` and all)
+— only the `research_results` row is skipped, and `page.completed`'s new
+`duplicate_reason` field says which layer caught it. See `docs/API.md`.
+
+**TESTED** — 46 new tests, all SQLite/pure-logic except the pipeline
+tests: 9 for `normalize_url`, 9 for `extract_structured_data`
+(`tests/test_structured_extraction.py`), 10 for shingling/Jaccard/
+`NearDuplicateDetector` (`tests/test_dedup.py`), and 3 full worker-pipeline
+tests with the network layer stubbed (`tests/test_extraction_dedup_
+pipeline.py`) proving a tracking-param link to the seed page is never
+separately crawled, a near-duplicate `/print` page is crawled but
+produces no second result, and `structured_data` from real JSON-LD/meta
+tags lands on the stored `crawl_pages` row. 106/106 backend tests pass
+total, including all 5 real-Postgres RLS tests re-verified against the
+`0004` migration and the `bpo_app` least-privilege role.
+
+**WORKING** — confirmed via the pipeline tests above (real DB writes,
+real scoring/extraction/dedup logic, only network stubbed — the same
+constraint as every prior session: this sandbox's egress policy blocks
+general outbound HTTPS, not just the previously-documented DuckDuckGo
+host, so no live external crawl is possible here). One real bug was
+found while writing these tests, not by them: Phase 3's own
+`test_pipeline_stops_on_diminishing_returns_before_exhausting_budget`
+used byte-identical filler text across all six candidate pages, so once
+near-duplicate detection existed, pages 2–6 correctly started being
+flagged as near-duplicates of page 1 — that test's assertion ("every
+crawled page yields a result") had been quietly relying on the fixture
+never having realistic duplicate content. Fixed the fixture to use
+distinct text per page, since that test's actual purpose is the
+stall/early-stop logic, not dedup — the new dedup behavior itself is
+correct and is exactly what a later session's tests now cover directly.
+
+**REMAINING** — Only 3 dedup layers exist, not the "6-level dedup" the
+audit's phase-table label names; that number was never broken down
+anywhere in this repo's docs, so nothing was silently skipped — it's
+flagged here as a label the codebase doesn't yet substantiate, for
+whoever defines the other 3 next (candidates per the master spec's
+broader intent: entity-level dedup once Phase 5 Entity Resolution exists,
+cross-source/cross-job dedup, and structural/DOM-based similarity beyond
+plain text shingling). `ATTRIBUTE_PAGE_SIGNALS`/`ATTRIBUTES` still don't
+extract `structured_data`'s fields into `required_attributes` satisfaction
+— `InformationGainTracker` still only looks at trafilatura's plain text,
+so a page with a CEO's name *only* in JSON-LD and not in visible prose
+wouldn't count as satisfying that attribute yet. `docker compose up` still
+unverified in this sandbox (no Docker daemon), same as every prior
+session.
+
+**NEXT** — per `AUDIT_BPO_CRM.md`'s approved phase table: Phase 5 (Entity
+Resolution) is the next unstarted phase in sequence, or the still-open
+remainders of Phase 2 (multi-provider source discovery) and Phase 3
+(adaptive fetcher), pending direction from whoever's driving next.
+
 ## Phase 1 — Foundation
 
 **Scope delivered:** monorepo layout; FastAPI app factory with health check

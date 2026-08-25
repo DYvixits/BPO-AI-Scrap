@@ -124,6 +124,15 @@ sources.discovered, page.completed, page.failed, crawl.expanded,
 crawl.stopped_early, research.completed, research.failed`), as JSON text
 frames, as they happen.
 
+`page.completed`'s payload also carries `duplicate_reason` (Phase 4):
+`"exact_hash"` when the page's content is byte-identical to one already
+crawled in this job, `"near_duplicate"` when it's a high-similarity match
+(e.g. the same page with a timestamp or session token embedded), or `null`
+when it's not a duplicate — `duplicate` is `true` for either reason.
+A duplicate page is still crawled and recorded (its `crawl_pages` row and
+`structured_data` exist), it just doesn't produce a second
+`research_results` row.
+
 `crawl.expanded` (`{"from": "<url>", "new_candidates": N}`) fires when a
 crawled page yields new same-domain links worth considering — the crawl
 frontier growing, not a completed page. `crawl.stopped_early`

@@ -161,6 +161,7 @@ async def add_crawl_page(
     content_hash: str | None,
     title: str | None,
     extracted_text: str | None,
+    structured_data: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> CrawlPage:
     page = CrawlPage(
@@ -171,6 +172,7 @@ async def add_crawl_page(
         content_hash=content_hash,
         title=title,
         extracted_text=extracted_text,
+        structured_data=structured_data or {},
         error=error,
     )
     db.add(page)

@@ -35,8 +35,11 @@ export function describeEvent(event: ResearchEvent): string {
       return `Found ${payload.count} candidate source${payload.count === 1 ? "" : "s"}`;
     case "sources.discovered":
       return `Registered ${payload.count} source${payload.count === 1 ? "" : "s"} to crawl`;
-    case "page.completed":
-      return `Crawled: ${payload.title || payload.url}${payload.duplicate ? " (duplicate, skipped)" : ""}`;
+    case "page.completed": {
+      if (!payload.duplicate) return `Crawled: ${payload.title || payload.url}`;
+      const reason = payload.duplicate_reason === "near_duplicate" ? "near-duplicate" : "duplicate";
+      return `Crawled: ${payload.title || payload.url} (${reason}, skipped)`;
+    }
     case "page.failed":
       return `Could not access ${payload.url} — ${payload.error}`;
     case "crawl.expanded":
