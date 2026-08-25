@@ -120,8 +120,18 @@ explicitly not a "verified" score) — always empty until `status ==
 Browser WebSocket clients can't set headers, so auth is a query param:
 `wss://.../research/{id}/ws?token=<access_token>`. Streams the same event
 kinds as the `events` array on the job (`status.changed, search.completed,
-sources.discovered, page.completed, page.failed, research.completed,
-research.failed`), as JSON text frames, as they happen.
+sources.discovered, page.completed, page.failed, crawl.expanded,
+crawl.stopped_early, research.completed, research.failed`), as JSON text
+frames, as they happen.
+
+`crawl.expanded` (`{"from": "<url>", "new_candidates": N}`) fires when a
+crawled page yields new same-domain links worth considering — the crawl
+frontier growing, not a completed page. `crawl.stopped_early`
+(`{"reason": "objective_satisfied" | "diminishing_returns", "pages_crawled":
+N}`) fires at most once per job, only when the crawl stopped before
+exhausting its `max_pages` budget — either because every `required_attribute`
+the query asked for was found, or because a run of pages in a row found
+nothing new. See `ARCHITECTURE.md` §7 for the scoring/tracking behind both.
 
 ## Health
 

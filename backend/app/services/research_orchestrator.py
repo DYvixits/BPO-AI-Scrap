@@ -14,19 +14,29 @@ from app.repositories import research_repository, tenant_repository
 # Mode presets (master spec §30/§76): the user picks a mode, the platform
 # picks the parameters. `config_overrides` from the request layered on top
 # lets an "advanced" caller override any of these without changing the mode.
+#
+# max_results: how many search hits seed the crawl frontier. max_pages: the
+# crawl's actual page budget (AUDIT_BPO_CRM.md Phase 3 — the worker no
+# longer just fetches every search hit once; it prioritizes and can follow
+# same-domain links beyond the initial hits, up to this cap). max_pages is
+# intentionally a bit larger than max_results so there's real room to
+# follow a promising link, not just re-fetch the seeds.
 MODE_DEFAULTS: dict[ResearchMode, dict[str, Any]] = {
-    ResearchMode.QUICK: {"max_results": 3},
-    ResearchMode.BALANCED: {"max_results": 6},
-    ResearchMode.DEEP: {"max_results": 12},
-    ResearchMode.VERIFIED: {"max_results": 6, "min_sources": 3},
-    ResearchMode.INVESTIGATION: {"max_results": 15, "min_sources": 3},
-    ResearchMode.CUSTOM: {"max_results": 6},
+    ResearchMode.QUICK: {"max_results": 3, "max_pages": 4},
+    ResearchMode.BALANCED: {"max_results": 6, "max_pages": 10},
+    ResearchMode.DEEP: {"max_results": 12, "max_pages": 24},
+    ResearchMode.VERIFIED: {"max_results": 6, "max_pages": 10, "min_sources": 3},
+    ResearchMode.INVESTIGATION: {"max_results": 15, "max_pages": 30, "min_sources": 3},
+    ResearchMode.CUSTOM: {"max_results": 6, "max_pages": 10},
 }
 
 _ARQ_JOB_NAME = "run_research_job"
 _redis_pool: ArqRedis | None = None
 
 # A number mentioned in the query text (e.g. "find 500 companies") overrides
+# the mode's max_results *and* max_pages, but both stay bounded — even with
+# Phase 3's prioritization and early stopping, an unbounded override would
+# let a single request ask for an unreasonable amount of crawl work.
 # the mode's max_results, but is still bounded — Phase 1-3's crawler fetches
 # every discovered URL in one bounded-concurrency batch per job (no
 # pagination/streaming yet), so an unbounded override would let a single
@@ -101,6 +111,13 @@ async def create_and_enqueue(
     objective = parse_query(query)
     config = resolve_config(mode, config_overrides)
     if (result_limit := parse_result_limit(query)) is not None:
+        bounded = min(result_limit, _MAX_RESULT_LIMIT_OVERRIDE)
+        config["max_results"] = bounded
+        # A page budget the mode default would otherwise cap too low to act
+        # on the override — e.g. asking for "250 companies" on balanced
+        # mode's default max_pages=10 would barely start. Only raises it,
+        # never lowers a mode's own larger default (deep/investigation).
+        config["max_pages"] = max(config.get("max_pages", bounded), bounded)
         config["max_results"] = min(result_limit, _MAX_RESULT_LIMIT_OVERRIDE)
 
     job = await research_repository.create_research_job(
