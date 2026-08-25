@@ -57,7 +57,18 @@ parameter from the client.
 // response 201
 {
   "id": "uuid", "query": "...", "status": "queued", "mode": "balanced",
-  "config": { "max_results": 6 }, "error": null,
+  "config": { "max_results": 6 },
+  "objective": {
+    "target_entities": ["company"],
+    "geography": ["Africa"],
+    "industry": ["fintech"],
+    "company_size_min": null, "company_size_max": null,
+    "required_attributes": [],
+    "signals": ["funding"],
+    "freshness": "any",
+    "matched_keywords": { "geography": ["african"], "industry": ["fintech"], "signals": ["funding"] }
+  },
+  "error": null,
   "created_at": "...", "started_at": null, "completed_at": null
 }
 // or 429 if the organization's TenantQuota.max_concurrent_research_jobs
@@ -69,6 +80,15 @@ parameter from the client.
 custom`; each has default parameters (`ARCHITECTURE.md` §"provider
 abstractions" / `research_orchestrator.py::MODE_DEFAULTS`). `config`
 overrides individual fields on top of the mode's defaults.
+
+`objective` is computed once at creation by the heuristic Query
+Intelligence Engine (`app/engines/query_intelligence`) — no LLM call, pure
+keyword matching — and never changes afterward. `matched_keywords` records
+the literal words in the query that produced each field, so every tag is
+explainable rather than a black box. The Search Strategy Engine
+(`app/engines/search_strategy`) then turns this objective into up to 4
+targeted search queries for the worker, deduplicated by URL before
+crawling. See `ARCHITECTURE.md` §1 and §7 for the full flow.
 
 ### `GET /research`
 

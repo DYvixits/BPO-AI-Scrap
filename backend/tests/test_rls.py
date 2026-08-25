@@ -1,11 +1,25 @@
 """PostgreSQL Row-Level Security tests — the one thing tests/conftest.py's
 SQLite-backed `db_session` fixture structurally cannot cover, since SQLite
 has no RLS at all (see app/core/database.py's dialect check). These need a
-real PostgreSQL reachable at TEST_DATABASE_URL (defaults to the same
-database docker-compose/local dev uses); if it's not reachable, the whole
-module is skipped rather than failing — local `pytest` without Postgres
-running still passes, CI provides a postgres service container (see
-.github/workflows/ci.yml) so these actually run there.
+real PostgreSQL reachable at TEST_DATABASE_URL; if it's not reachable, the
+whole module is skipped rather than failing — local `pytest` without
+Postgres running still passes, CI provides a postgres service container
+(see .github/workflows/ci.yml) so these actually run there.
+
+TEST_DATABASE_URL must point at a **non-superuser** role. Postgres
+superusers unconditionally bypass Row-Level Security regardless of FORCE —
+this isn't a corner case, it's the documented behavior — so connecting as
+one would make every assertion below pass vacuously without RLS doing
+anything. This was caught for real: CI's postgres:16-alpine service
+container creates its POSTGRES_USER ("bpo") as a superuser (that's what the
+official image does), and these tests silently exercised nothing until CI
+started creating a second, ordinary role ("bpo_app") after migrations and
+pointing this suite at it instead — see SECURITY.md's "Tenant isolation"
+section for the full story. The default below matches CI's role; for local
+runs, create it once against your local Postgres:
+  psql -U bpo -d bpo_ai_scrap -c "CREATE ROLE bpo_app LOGIN PASSWORD 'bpo_app'; \
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO bpo_app; \
+    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO bpo_app;"
 
 What's verified here is exactly what was manually verified against a real
 local Postgres during development (see docs/phases/PHASE_PLAN.md's Session
@@ -24,7 +38,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL", "postgresql+asyncpg://bpo:bpo@localhost:5432/bpo_ai_scrap"
+    "TEST_DATABASE_URL", "postgresql+asyncpg://bpo_app:bpo_app@localhost:5432/bpo_ai_scrap"
 )
 
 

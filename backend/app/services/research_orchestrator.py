@@ -6,6 +6,7 @@ from arq.connections import RedisSettings
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.engines.query_intelligence.parser import parse_query, parse_result_limit
 from app.models.research import ResearchJob, ResearchMode, ResearchStatus
 from app.models.tenant import TenantTier
 from app.repositories import research_repository, tenant_repository
@@ -24,6 +25,15 @@ MODE_DEFAULTS: dict[ResearchMode, dict[str, Any]] = {
 
 _ARQ_JOB_NAME = "run_research_job"
 _redis_pool: ArqRedis | None = None
+
+# A number mentioned in the query text (e.g. "find 500 companies") overrides
+# the mode's max_results, but is still bounded — Phase 1-3's crawler fetches
+# every discovered URL in one bounded-concurrency batch per job (no
+# pagination/streaming yet), so an unbounded override would let a single
+# request ask for an unreasonable amount of crawl work. Revisit once
+# goal-driven prioritization (Phase 3) makes "more results" a budget
+# decision rather than "crawl everything now."
+_MAX_RESULT_LIMIT_OVERRIDE = 50
 
 
 class QuotaExceededError(Exception):
@@ -88,7 +98,11 @@ async def create_and_enqueue(
     if active >= limit:
         raise QuotaExceededError(limit=limit, active=active)
 
+    objective = parse_query(query)
     config = resolve_config(mode, config_overrides)
+    if (result_limit := parse_result_limit(query)) is not None:
+        config["max_results"] = min(result_limit, _MAX_RESULT_LIMIT_OVERRIDE)
+
     job = await research_repository.create_research_job(
         db,
         organization_id=organization_id,
@@ -96,6 +110,7 @@ async def create_and_enqueue(
         query=query,
         mode=mode,
         config=config,
+        objective=objective.model_dump(),
     )
     await enqueue_job(job.id)
     await research_repository.set_status(db, job_id=job.id, status=ResearchStatus.QUEUED)

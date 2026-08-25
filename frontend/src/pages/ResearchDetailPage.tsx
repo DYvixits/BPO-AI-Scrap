@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { describeEvent, STATUS_LABEL, statusProgressPercent } from "@/features/research/format";
 import { getResearch, getResearchResults } from "@/features/research/api";
 import { useResearchEvents } from "@/features/research/useResearchEvents";
-import type { ResearchEvent, ResearchResult } from "@/types/api";
+import type { ResearchEvent, ResearchObjective, ResearchResult } from "@/types/api";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed"]);
 
@@ -87,6 +87,8 @@ export function ResearchDetailPage() {
         {new Date(job.created_at).toLocaleString()}
       </p>
 
+      <ObjectiveChips objective={job.objective} />
+
       {job.status === "failed" ? (
         <FailedState error={job.error} />
       ) : (
@@ -147,6 +149,43 @@ export function ResearchDetailPage() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ObjectiveChips({ objective }: { objective: ResearchObjective }) {
+  const chips: { label: string; value: string }[] = [];
+  if (objective.industry.length) chips.push({ label: "Industry", value: objective.industry.join(", ") });
+  if (objective.geography.length) chips.push({ label: "Geography", value: objective.geography.join(", ") });
+  if (objective.company_size_min || objective.company_size_max) {
+    const min = objective.company_size_min;
+    const max = objective.company_size_max;
+    chips.push({
+      label: "Company size",
+      value: min && max ? `${min}-${max} employees` : min ? `${min}+ employees` : `<${max} employees`,
+    });
+  }
+  if (objective.signals.length) {
+    chips.push({ label: "Signals", value: objective.signals.map((s) => s.replace(/_/g, " ")).join(", ") });
+  }
+  if (objective.freshness === "recent") chips.push({ label: "Freshness", value: "recent" });
+  if (objective.target_entities.includes("person")) chips.push({ label: "Also finding", value: "people/contacts" });
+
+  if (chips.length === 0) return null;
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+      <span className="text-xs text-muted-foreground">Understood as:</span>
+      {chips.map((chip) => (
+        <span
+          key={chip.label}
+          className="inline-flex items-center gap-1 rounded-full border border-border bg-secondary/60 px-2.5 py-0.5 text-xs"
+          title={`Matched from your query — see the API response's objective.matched_keywords for the exact words.`}
+        >
+          <span className="text-muted-foreground">{chip.label}:</span>
+          <span className="font-medium text-foreground">{chip.value}</span>
+        </span>
+      ))}
     </div>
   );
 }

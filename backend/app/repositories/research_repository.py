@@ -24,6 +24,7 @@ async def create_research_job(
     query: str,
     mode: ResearchMode,
     config: dict[str, Any],
+    objective: dict[str, Any],
 ) -> ResearchJob:
     job = ResearchJob(
         organization_id=organization_id,
@@ -31,6 +32,7 @@ async def create_research_job(
         query=query,
         mode=mode,
         config=config,
+        objective=objective,
         status=ResearchStatus.CREATED,
     )
     db.add(job)
