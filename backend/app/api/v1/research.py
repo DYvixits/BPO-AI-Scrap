@@ -15,7 +15,7 @@ from app.schemas.research import (
     ResearchJobOut,
     ResearchResultOut,
 )
-from app.services.research_orchestrator import create_and_enqueue
+from app.services.research_orchestrator import QuotaExceededError, create_and_enqueue
 
 router = APIRouter(prefix="/research", tags=["research"])
 
@@ -26,14 +26,20 @@ async def create_research(
     auth: AuthContext = Depends(get_current_auth),
     db: AsyncSession = Depends(get_db),
 ) -> ResearchJobOut:
-    job = await create_and_enqueue(
-        db,
-        organization_id=auth.organization_id,
-        created_by=auth.user.id,
-        query=payload.query,
-        mode=payload.mode,
-        config_overrides=payload.config,
-    )
+    try:
+        job = await create_and_enqueue(
+            db,
+            organization_id=auth.organization_id,
+            created_by=auth.user.id,
+            query=payload.query,
+            mode=payload.mode,
+            config_overrides=payload.config,
+        )
+    except QuotaExceededError as exc:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"{exc} — wait for a running research job to finish, or upgrade your plan.",
+        ) from exc
     return ResearchJobOut.model_validate(job)
 
 
@@ -95,6 +101,7 @@ async def research_ws(websocket: WebSocket, job_id: UUID) -> None:
 
     organization_id = UUID(payload["org"])
     async with database_module.async_session_factory() as db:
+        database_module.set_tenant_context(db, organization_id)
         job = await research_repository.get_research_job(
             db, organization_id=organization_id, job_id=job_id
         )

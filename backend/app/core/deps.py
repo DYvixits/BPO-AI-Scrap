@@ -6,7 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_db, set_tenant_context
 from app.core.security import InvalidTokenError, TokenType, decode_token
 from app.models.organization import OrganizationMember, Role
 from app.models.user import User
@@ -42,6 +42,12 @@ async def get_current_auth(
 
     user_id = UUID(payload["sub"])
     organization_id = UUID(payload["org"])
+
+    # Must happen before this session's first query (see
+    # app/core/database.py::set_tenant_context) so PostgreSQL RLS is active
+    # for every tenant-scoped table this request touches, including this
+    # dependency's own membership check below.
+    set_tenant_context(db, organization_id)
 
     user = await db.get(User, user_id)
     if user is None or not user.is_active:

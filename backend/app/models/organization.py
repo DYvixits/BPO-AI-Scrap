@@ -5,6 +5,7 @@ from sqlalchemy import ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin, pg_enum
+from app.models.tenant import TenantTier
 
 
 class Role(StrEnum):
@@ -22,9 +23,15 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    tier: Mapped[TenantTier] = mapped_column(
+        pg_enum(TenantTier, "tenant_tier"), nullable=False, default=TenantTier.STANDARD
+    )
 
     members: Mapped[list["OrganizationMember"]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"
+    )
+    quota: Mapped["TenantQuota | None"] = relationship(  # noqa: F821
+        back_populates="organization", cascade="all, delete-orphan", uselist=False
     )
 
 

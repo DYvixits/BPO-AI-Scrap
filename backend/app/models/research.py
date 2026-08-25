@@ -69,6 +69,14 @@ class ResearchEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __tablename__ = "research_events"
 
+    # organization_id is denormalized onto every tenant-scoped table (rather
+    # than only living on research_jobs and requiring a join) so that (a)
+    # PostgreSQL RLS policies here are a plain equality check, not a
+    # subquery, and (b) tenant-filtered queries can use a direct index
+    # instead of joining through research_jobs. See docs/AUDIT_BPO_CRM.md §5.
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
     research_job_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("research_jobs.id", ondelete="CASCADE"), index=True, nullable=False
     )
@@ -81,6 +89,9 @@ class ResearchEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "sources"
 
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
     research_job_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("research_jobs.id", ondelete="CASCADE"), index=True, nullable=False
     )
@@ -97,6 +108,9 @@ class Source(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class CrawlPage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "crawl_pages"
 
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
     source_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("sources.id", ondelete="CASCADE"), index=True, nullable=False
     )
@@ -113,6 +127,9 @@ class CrawlPage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class ResearchResult(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "research_results"
 
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
     research_job_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("research_jobs.id", ondelete="CASCADE"), index=True, nullable=False
     )

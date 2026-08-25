@@ -60,6 +60,9 @@ parameter from the client.
   "config": { "max_results": 6 }, "error": null,
   "created_at": "...", "started_at": null, "completed_at": null
 }
+// or 429 if the organization's TenantQuota.max_concurrent_research_jobs
+// (standard tier default: 2) is already reached by other non-terminal jobs
+{ "detail": "Concurrent research job limit reached (2/2) — wait for a running research job to finish, or upgrade your plan." }
 ```
 
 `mode` is one of `quick | balanced | deep | verified | investigation |

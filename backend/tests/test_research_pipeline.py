@@ -45,11 +45,13 @@ async def test_pipeline_completes_and_stores_results(db_session, monkeypatch):
     monkeypatch.setattr(research_task_module.DuckDuckGoSearchProvider, "search", fake_search)
     monkeypatch.setattr(research_task_module.PageFetcher, "fetch", fake_fetch)
 
-    async def fake_emit(job_id, kind, payload):
+    async def fake_emit(organization_id, job_id, kind, payload):
         # avoid requiring a live Redis for pub/sub in this unit test — the DB
         # side of event logging is still exercised via add_event below.
         async with db_session() as db:
-            await research_repository.add_event(db, job_id=job_id, kind=kind, payload=payload)
+            await research_repository.add_event(
+                db, organization_id=organization_id, job_id=job_id, kind=kind, payload=payload
+            )
 
     monkeypatch.setattr(research_task_module, "_emit", fake_emit)
 
@@ -96,9 +98,11 @@ async def test_pipeline_with_no_search_hits_completes_with_zero_results(db_sessi
 
     monkeypatch.setattr(research_task_module.DuckDuckGoSearchProvider, "search", fake_search)
 
-    async def fake_emit(job_id, kind, payload):
+    async def fake_emit(organization_id, job_id, kind, payload):
         async with db_session() as db:
-            await research_repository.add_event(db, job_id=job_id, kind=kind, payload=payload)
+            await research_repository.add_event(
+                db, organization_id=organization_id, job_id=job_id, kind=kind, payload=payload
+            )
 
     monkeypatch.setattr(research_task_module, "_emit", fake_emit)
 

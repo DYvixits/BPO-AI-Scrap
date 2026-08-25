@@ -114,7 +114,14 @@ what exists now:
 
 ```
 organizations
-  id (uuid pk), name, slug, created_at
+  id (uuid pk), name, slug, tier (enum: standard|pro|business|enterprise), created_at
+
+tenant_quotas
+  id (uuid pk), organization_id fk (unique), crawl_concurrency,
+  max_concurrent_research_jobs, ai_budget_cents, storage_mb_limit,
+  worker_priority, created_at
+  # seeded from tier defaults at signup, then an ordinary editable row
+  # (Configuration Engine pattern) — see app/services/tenant_quotas.py
 
 users
   id (uuid pk), email (unique), hashed_password, full_name,
@@ -132,25 +139,32 @@ research_jobs
   created_at, started_at, completed_at, error
 
 research_events
-  id (uuid pk), research_job_id fk, kind (text), payload (jsonb), created_at
+  id (uuid pk), organization_id fk, research_job_id fk, kind (text),
+  payload (jsonb), created_at
   # append-only log; also published on Redis pub/sub for live UI
 
 sources
-  id (uuid pk), research_job_id fk, url, domain, status, discovered_at
+  id (uuid pk), organization_id fk, research_job_id fk, url, domain,
+  status, discovered_at
 
 crawl_pages
-  id (uuid pk), source_id fk, url, http_status, content_hash,
-  title, extracted_text, extracted_at, error
+  id (uuid pk), organization_id fk, source_id fk, url, http_status,
+  content_hash, title, extracted_text, extracted_at, error
 
 research_results
-  id (uuid pk), research_job_id fk, crawl_page_id fk (nullable),
+  id (uuid pk), organization_id fk, research_job_id fk, crawl_page_id fk (nullable),
   title, url, snippet, confidence (float, currently source/freshness-based —
   see PHASE_PLAN §6 for the full multi-source Truth Engine), created_at
 ```
 
-All tables use UUID primary keys and are scoped by `organization_id` (directly
-or transitively) for tenant isolation — every repository query filters on it;
-there is no cross-tenant query path in Phase 1–3 code.
+All tables use UUID primary keys and are scoped by `organization_id` for
+tenant isolation. `organization_id` is denormalized directly onto
+`research_events`/`sources`/`crawl_pages`/`research_results` (rather than
+living only on `research_jobs` and requiring a join) for two reasons: it
+keeps app-layer filters and indexes simple, and it's what makes PostgreSQL
+Row-Level Security on those four tables a plain equality check instead of a
+subquery — see SECURITY.md §"Tenant isolation" for the full RLS design,
+including why `research_jobs` itself is deliberately excluded from RLS.
 
 `research_jobs.status` state machine (subset of the full 71-state spec target):
 

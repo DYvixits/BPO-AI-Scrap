@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.research import ResearchJob, ResearchMode, ResearchStatus
-from app.repositories import research_repository
+from app.models.tenant import TenantTier
+from app.repositories import research_repository, tenant_repository
 
 # Mode presets (master spec §30/§76): the user picks a mode, the platform
 # picks the parameters. `config_overrides` from the request layered on top
@@ -23,6 +24,18 @@ MODE_DEFAULTS: dict[ResearchMode, dict[str, Any]] = {
 
 _ARQ_JOB_NAME = "run_research_job"
 _redis_pool: ArqRedis | None = None
+
+
+class QuotaExceededError(Exception):
+    """Raised when creating this job would exceed
+    TenantQuota.max_concurrent_research_jobs (master spec §38 — fair
+    resource scheduling: no tenant monopolizes workers). Caught in
+    app/api/v1/research.py and turned into an HTTP 429."""
+
+    def __init__(self, *, limit: int, active: int) -> None:
+        self.limit = limit
+        self.active = active
+        super().__init__(f"Concurrent research job limit reached ({active}/{limit})")
 
 
 def resolve_config(mode: ResearchMode, overrides: dict[str, Any]) -> dict[str, Any]:
@@ -44,6 +57,21 @@ async def enqueue_job(job_id: uuid.UUID) -> None:
     await pool.enqueue_job(_ARQ_JOB_NAME, str(job_id))
 
 
+async def _max_concurrent_jobs_for(db: AsyncSession, organization_id: uuid.UUID) -> int:
+    quota = await tenant_repository.get_quota(db, organization_id=organization_id)
+    if quota is not None:
+        return quota.max_concurrent_research_jobs
+    # Organizations created before this phase have no quota row yet — fall
+    # back to the standard tier's default rather than leaving them
+    # unlimited, and self-heal by creating the row so this fallback only
+    # fires once per pre-existing organization.
+    quota = await tenant_repository.create_default_quota(
+        db, organization_id=organization_id, tier=TenantTier.STANDARD
+    )
+    await db.commit()
+    return quota.max_concurrent_research_jobs
+
+
 async def create_and_enqueue(
     db: AsyncSession,
     *,
@@ -53,6 +81,13 @@ async def create_and_enqueue(
     mode: ResearchMode,
     config_overrides: dict[str, Any],
 ) -> ResearchJob:
+    limit = await _max_concurrent_jobs_for(db, organization_id)
+    active = await research_repository.count_active_research_jobs(
+        db, organization_id=organization_id
+    )
+    if active >= limit:
+        raise QuotaExceededError(limit=limit, active=active)
+
     config = resolve_config(mode, config_overrides)
     job = await research_repository.create_research_job(
         db,

@@ -37,13 +37,64 @@ This is enforced in code, not just documented: see
 
 ## Tenant isolation
 
-Every table below the organization level carries (directly or via FK chain)
-`organization_id`. Every repository method that reads or writes research
-data takes the caller's `organization_id` (resolved server-side from the JWT,
-never from a client-supplied parameter) and filters on it. There is no code
-path in `app/repositories/` that queries across organizations. RBAC role
-checks (`app/core/deps.py::require_role`) gate write operations beyond the
-caller's role.
+Two independent layers, not one:
+
+1. **App layer.** Every table below the organization level carries (directly
+   or via FK chain) `organization_id`. Every repository method that reads or
+   writes research data takes the caller's `organization_id` (resolved
+   server-side from the JWT, never from a client-supplied parameter) and
+   filters on it. There is no code path in `app/repositories/` that queries
+   across organizations. RBAC role checks (`app/core/deps.py::require_role`)
+   gate write operations beyond the caller's role.
+2. **Database layer — PostgreSQL Row-Level Security.** `research_events`,
+   `sources`, `crawl_pages`, `research_results`, and `tenant_quotas` all have
+   RLS policies comparing their (denormalized, indexed) `organization_id`
+   column against `current_setting('app.current_tenant', true)`, enabled
+   with `FORCE ROW LEVEL SECURITY` so it applies even to the table-owning
+   role the app connects as (confirmed non-superuser — Postgres superusers
+   always bypass RLS regardless of FORCE, so this only holds because the app
+   role isn't one). `app/core/database.py` sets that session variable via a
+   SQLAlchemy `after_begin` listener, re-applied on every transaction (not
+   just the first — each repository call commits its own transaction, and
+   `SET LOCAL` only lives for the transaction it was issued in).
+
+   This means a bug in the app-layer filtering — a missing `WHERE
+   organization_id = ...`, a copy-pasted query — would still be blocked by
+   the database itself, and does not merely rely on someone reviewing that
+   the app layer got it right in every function forever.
+
+   `research_jobs` itself is deliberately **not** RLS-protected. Enforcing
+   it would create a bootstrapping deadlock: the worker's first read of a
+   job (`get_research_job_for_worker`) happens before it knows the job's
+   `organization_id` — it has to read the row to find that out, but RLS
+   would need the tenant context set before that read to allow it. Tenant
+   isolation on `research_jobs` stays app-layer only (tested —
+   `tests/test_research.py::test_organizations_cannot_see_each_others_research`).
+   The same class of ordering problem shows up wherever a new organization
+   or job is minted mid-request — see `app/repositories/auth_repository.py`
+   for how signup handles it (generate the UUID before any insert, set
+   tenant context immediately, then force a fresh transaction so the
+   listener actually re-fires with it).
+
+   Verified against a real PostgreSQL, not asserted: `tests/test_rls.py`
+   inserts without a tenant context (rejected), with the correct context
+   (succeeds), under the wrong tenant's context (rejected), and confirms a
+   `SELECT` never returns another tenant's rows — self-skips without a
+   reachable Postgres, and runs for real in CI (`.github/workflows/ci.yml`'s
+   `backend` job now starts a `postgres:16-alpine` service and applies
+   migrations before the test step for exactly this).
+
+   One implementation subtlety worth recording because it silently produces
+   the *wrong* failure mode if missed: `current_setting('app.current_tenant',
+   true)` only returns `NULL` the first time a session touches that
+   (undeclared, session-scoped) custom setting. Once any transaction on a
+   pooled connection has done `SET LOCAL app.current_tenant = ...`, a later
+   transaction on the *same* connection that forgets to set it again gets
+   `''` back, not `NULL` — and `''::uuid` raises a hard error instead of the
+   policy evaluating to false. The policies use
+   `NULLIF(current_setting(...), '')::uuid` specifically to keep "no tenant
+   context set" failing closed (no rows, always) rather than sometimes
+   erroring depending on what a pooled connection was previously used for.
 
 ## Secrets
 

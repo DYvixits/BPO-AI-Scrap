@@ -91,6 +91,25 @@ async def get_research_job_for_worker(db: AsyncSession, *, job_id: uuid.UUID) ->
     return await db.get(ResearchJob, job_id)
 
 
+async def count_active_research_jobs(db: AsyncSession, *, organization_id: uuid.UUID) -> int:
+    """Non-terminal jobs for a tenant right now — used to enforce
+    TenantQuota.max_concurrent_research_jobs (master spec §38)."""
+    from sqlalchemy import func
+
+    terminal = (ResearchStatus.COMPLETED, ResearchStatus.FAILED)
+    return (
+        await db.scalar(
+            select(func.count())
+            .select_from(ResearchJob)
+            .where(
+                ResearchJob.organization_id == organization_id,
+                ResearchJob.status.not_in(terminal),
+            )
+        )
+        or 0
+    )
+
+
 async def set_status(
     db: AsyncSession, *, job_id: uuid.UUID, status: ResearchStatus, error: str | None = None
 ) -> None:
@@ -104,17 +123,26 @@ async def set_status(
 
 
 async def add_event(
-    db: AsyncSession, *, job_id: uuid.UUID, kind: str, payload: dict[str, Any]
+    db: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    job_id: uuid.UUID,
+    kind: str,
+    payload: dict[str, Any],
 ) -> ResearchEvent:
-    event = ResearchEvent(research_job_id=job_id, kind=kind, payload=payload)
+    event = ResearchEvent(
+        organization_id=organization_id, research_job_id=job_id, kind=kind, payload=payload
+    )
     db.add(event)
     await db.commit()
     await db.refresh(event)
     return event
 
 
-async def add_source(db: AsyncSession, *, job_id: uuid.UUID, url: str, domain: str) -> Source:
-    source = Source(research_job_id=job_id, url=url, domain=domain)
+async def add_source(
+    db: AsyncSession, *, organization_id: uuid.UUID, job_id: uuid.UUID, url: str, domain: str
+) -> Source:
+    source = Source(organization_id=organization_id, research_job_id=job_id, url=url, domain=domain)
     db.add(source)
     await db.commit()
     await db.refresh(source)
@@ -124,6 +152,7 @@ async def add_source(db: AsyncSession, *, job_id: uuid.UUID, url: str, domain: s
 async def add_crawl_page(
     db: AsyncSession,
     *,
+    organization_id: uuid.UUID,
     source_id: uuid.UUID,
     url: str,
     http_status: int | None,
@@ -133,6 +162,7 @@ async def add_crawl_page(
     error: str | None = None,
 ) -> CrawlPage:
     page = CrawlPage(
+        organization_id=organization_id,
         source_id=source_id,
         url=url,
         http_status=http_status,
@@ -165,6 +195,7 @@ async def content_hash_already_used(
 async def add_result(
     db: AsyncSession,
     *,
+    organization_id: uuid.UUID,
     job_id: uuid.UUID,
     crawl_page_id: uuid.UUID | None,
     title: str | None,
@@ -173,6 +204,7 @@ async def add_result(
     confidence: float,
 ) -> ResearchResult:
     res = ResearchResult(
+        organization_id=organization_id,
         research_job_id=job_id,
         crawl_page_id=crawl_page_id,
         title=title,

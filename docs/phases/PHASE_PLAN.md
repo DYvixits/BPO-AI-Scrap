@@ -4,6 +4,14 @@ Built incrementally. Each phase must be functional before the next starts
 (master spec §85, §103). This document is the standing reference for what
 "done" means per phase, and is updated as phases land.
 
+**Note:** the platform's product direction was revised mid-build toward
+commercial intelligence for a BPO CRM — see
+[`../AUDIT_BPO_CRM.md`](../AUDIT_BPO_CRM.md), whose §6 phase table (0–15,
+approved reordering: CRM Integration ahead of Knowledge Graph) is now the
+authoritative forward plan. This file's original 1–11 table is kept as-is
+below for the Phase 1–3 history and verification reports; new phase work is
+tracked against AUDIT_BPO_CRM.md's numbering instead of renumbering this one.
+
 ## Phase status
 
 | Phase | Name | Status |
@@ -95,9 +103,101 @@ still owed as a follow-up check in an environment where Docker is available.
 **REMAINING** — everything in Phases 4–11 below, as scoped. Within Phase
 1–3 itself: no known gaps against what was promised for this slice.
 
-**NEXT** — Phase 4 (Advanced Crawler): Playwright browser worker, adaptive
-static/dynamic strategy selection, sitemap/robots.txt awareness, goal-driven
-URL prioritization.
+**NEXT (superseded)** — this originally said Phase 4 (Advanced Crawler); the
+product direction changed before that started — see the note at the top of
+this file and the Session 2 report immediately below, which covers what was
+actually built next (multitenancy hardening) instead.
+
+## Session 2 verification report — multitenancy hardening
+
+Scope: `AUDIT_BPO_CRM.md`'s Phase 1 ("Foundation + multitenancy hardening"),
+specifically tenant tiers/quotas and PostgreSQL Row-Level Security as
+defense-in-depth on top of the app-layer tenant scoping Phase 1–3 already
+had. Full design rationale lives in `SECURITY.md` §"Tenant isolation" and
+`ARCHITECTURE.md` §4 — this section is the same implement→test→report
+discipline as Session 1.
+
+**IMPLEMENTED** — `organizations.tier` + `tenant_quotas` table (seeded from
+tier defaults at signup, then an ordinary editable row per organization);
+`organization_id` denormalized onto `research_events`/`sources`/
+`crawl_pages`/`research_results`; PostgreSQL RLS (`ENABLE` + `FORCE ROW
+LEVEL SECURITY` + a `tenant_isolation` policy) on those four tables plus
+`tenant_quotas`; a SQLAlchemy `after_begin` listener
+(`app/core/database.py::set_tenant_context`) that issues `SET LOCAL
+app.current_tenant` on every transaction, wired from both
+`app/core/deps.py::get_current_auth` (API requests) and
+`app/workers/tasks/research.py` (background jobs); `max_concurrent_
+research_jobs` quota enforcement on `POST /research` (HTTP 429 when
+exceeded).
+
+**TESTED** — 7 new automated tests: 2 quota-enforcement tests (SQLite —
+pure app logic, no RLS needed) and 5 real-PostgreSQL RLS tests
+(`tests/test_rls.py`, self-skipping without a reachable database, wired
+into CI via a new `postgres:16-alpine` service container in
+`.github/workflows/ci.yml`). 34/34 tests pass total. Also re-verified the
+full register → login → create-research → live-pipeline flow end-to-end
+against real Postgres + Redis + uvicorn + arq, the same way as Session 1.
+
+**WORKING** — confirmed live, by hand, before the automated tests existed
+to double-check them: an INSERT into an RLS-protected table with no tenant
+context set is rejected; the same INSERT with the correct
+`SET LOCAL app.current_tenant` succeeds; an INSERT claiming a different
+organization than the active context is rejected; a `SELECT` from one
+tenant's context never returns another tenant's rows, including with no
+context set at all (fails closed, not open).
+
+**Bugs found and fixed via real-Postgres testing (again, none of these are
+visible to a SQLite-backed suite):**
+
+1. **Enum insert failure carried over from Session 1's pattern, new
+   instance.** Not applicable here — already fixed; noted only to say the
+   `pg_enum()` fix held up under the new `tenant_tier` enum without
+   incident.
+2. **`SET LOCAL` cannot take a bind parameter.** PostgreSQL's grammar
+   rejects `SET LOCAL x = $1` outright — a server-side restriction, not a
+   driver bug. Fixed by validating the tenant id through `uuid.UUID(...)`
+   (guaranteeing a safe 36-character canonical string with nothing to
+   inject) and interpolating that into the SQL text directly, rather than
+   binding it.
+3. **RLS policy bootstrapping problem when creating a new organization.**
+   `create_user_and_organization` inserts the new org's first
+   `tenant_quotas` row before any tenant context exists for it (there's
+   nothing to authenticate against — the org doesn't exist until this
+   transaction). Fixed by generating the organization's UUID up front,
+   calling `set_tenant_context` immediately, and forcing a fresh
+   transaction (a harmless `commit()` — nothing was pending) so the
+   `after_begin` listener actually re-fires with it, rather than applying
+   too late to the transaction already opened by an earlier read in the
+   same request.
+4. **`current_setting(..., true)` doesn't reliably return `NULL`.** Only
+   the very first time a session touches a given custom GUC. Once `SET
+   LOCAL app.current_tenant` has been issued at least once on a pooled
+   connection, a later transaction that forgets to set it again gets `''`
+   back — and `''::uuid` raises a hard error rather than the policy
+   evaluating to false. Fixed with `NULLIF(current_setting(...), '')::uuid`
+   in every policy, so "no tenant context" fails closed consistently
+   instead of erroring depending on connection reuse history.
+
+Each of these is exactly the kind of bug that only a real database — not a
+mock, not SQLite, not code review — surfaces, which is why this session
+again prioritized running the actual stack over trusting the migration
+file's SQL to be correct by inspection.
+
+**REMAINING** — `research_jobs` itself is not RLS-protected (deliberate
+scope boundary, documented in `SECURITY.md`; app-layer isolation there is
+tested but not backstopped by RLS yet — closing that gap needs a
+least-privilege worker role distinct from the request-serving role, tracked
+for a later hardening pass, not silently dropped). Tenant tiers exist but
+nothing yet reads/writes them beyond signup defaults (no admin console to
+adjust a tenant's tier or quota — Phase 11 territory). `docker compose up`
+still unverified in this sandbox (no Docker daemon) for the same reason as
+Session 1.
+
+**NEXT** — per `AUDIT_BPO_CRM.md`'s approved phase table: Phase 2 (Research
+Orchestrator — NL→`ResearchObjective`, multi-query Search Strategy Engine,
+multi-provider Source Discovery) or Phase 3 (Crawler Engine — adaptive
+strategy, goal-driven prioritization), pending direction from whoever's
+driving next.
 
 ## Phase 1 — Foundation
 

@@ -8,6 +8,7 @@ from app.models.research import (
     ResearchStatus,
     Source,
 )
+from app.models.tenant import TenantQuota, TenantTier
 from app.models.user import User
 
 __all__ = [
@@ -21,5 +22,7 @@ __all__ = [
     "ResearchStatus",
     "Role",
     "Source",
+    "TenantQuota",
+    "TenantTier",
     "User",
 ]

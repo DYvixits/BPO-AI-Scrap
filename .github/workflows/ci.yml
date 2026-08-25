@@ -8,6 +8,28 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # Most of the suite runs against SQLite (tests/conftest.py) and needs no
+    # service container. Row-Level Security has no SQLite equivalent at all
+    # (see app/core/database.py) — tests/test_rls.py needs a real Postgres,
+    # which this container provides; without it that file just self-skips
+    # (see its own module docstring), so this service isn't load-bearing for
+    # the rest of the suite, only for actually exercising RLS in CI.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bpo
+          POSTGRES_PASSWORD: bpo
+          POSTGRES_DB: bpo_ai_scrap
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bpo -d bpo_ai_scrap"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://bpo:bpo@localhost:5432/bpo_ai_scrap
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,6 +45,11 @@ jobs:
         run: |
           ruff check app tests
           ruff format --check app tests
+      - name: Apply migrations (for RLS tests)
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://bpo:bpo@localhost:5432/bpo_ai_scrap
+        run: alembic upgrade head
       - name: Test (pytest)
         working-directory: backend
         run: pytest -q
