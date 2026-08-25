@@ -35,15 +35,7 @@
           │  Engine    │ │  Engine    │ │  Engine    │
           │(provider   │ │(httpx, SSRF│ │(trafilatura│
           │ abstraction│ │ guarded)   │ │ + bs4/lxml)│
-          └─────▲──────┘ └──────┬─────┘ └────────────┘
-                │               │ same-domain links found on
-                │               │ each crawled page
-                │        ┌──────▼──────┐
-                │        │  Crawl      │  NextBestURL priority frontier:
-                │        │Prioritization│ score_candidate() ranks pages by
-                │        │  (frontier) │ objective fit; InformationGain-
-                │        └─────────────┘ Tracker stops the crawl early once
-                │                        required_attributes are satisfied
+          └─────▲──────┘ └────────────┘ └────────────┘
                 │ N queries (deduped by URL)
           ┌─────┴──────┐
           │  Search    │  builds up to MAX_QUERIES=4 targeted
