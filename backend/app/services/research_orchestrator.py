@@ -37,12 +37,6 @@ _redis_pool: ArqRedis | None = None
 # the mode's max_results *and* max_pages, but both stay bounded — even with
 # Phase 3's prioritization and early stopping, an unbounded override would
 # let a single request ask for an unreasonable amount of crawl work.
-# the mode's max_results, but is still bounded — Phase 1-3's crawler fetches
-# every discovered URL in one bounded-concurrency batch per job (no
-# pagination/streaming yet), so an unbounded override would let a single
-# request ask for an unreasonable amount of crawl work. Revisit once
-# goal-driven prioritization (Phase 3) makes "more results" a budget
-# decision rather than "crawl everything now."
 _MAX_RESULT_LIMIT_OVERRIDE = 50
 
 
@@ -118,7 +112,6 @@ async def create_and_enqueue(
         # mode's default max_pages=10 would barely start. Only raises it,
         # never lowers a mode's own larger default (deep/investigation).
         config["max_pages"] = max(config.get("max_pages", bounded), bounded)
-        config["max_results"] = min(result_limit, _MAX_RESULT_LIMIT_OVERRIDE)
 
     job = await research_repository.create_research_job(
         db,
