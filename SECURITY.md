@@ -51,12 +51,34 @@ Two independent layers, not one:
    RLS policies comparing their (denormalized, indexed) `organization_id`
    column against `current_setting('app.current_tenant', true)`, enabled
    with `FORCE ROW LEVEL SECURITY` so it applies even to the table-owning
-   role the app connects as (confirmed non-superuser — Postgres superusers
-   always bypass RLS regardless of FORCE, so this only holds because the app
-   role isn't one). `app/core/database.py` sets that session variable via a
-   SQLAlchemy `after_begin` listener, re-applied on every transaction (not
-   just the first — each repository call commits its own transaction, and
-   `SET LOCAL` only lives for the transaction it was issued in).
+   role. `app/core/database.py` sets that session variable via a SQLAlchemy
+   `after_begin` listener, re-applied on every transaction (not just the
+   first — each repository call commits its own transaction, and `SET
+   LOCAL` only lives for the transaction it was issued in).
+
+   **This layer is only load-bearing when the app connects as a
+   non-superuser role — that is not yet true of every environment this repo
+   ships.** Postgres superusers unconditionally bypass RLS regardless of
+   `FORCE`; this is a hard Postgres rule, not a configuration option. The
+   single `bpo` role used throughout `docker-compose.yml` and
+   `.env.example` for migrations *and* runtime traffic is created by the
+   official `postgres` Docker image as a **superuser** (that's what
+   `POSTGRES_USER` does), so as shipped in Docker Compose / a naive
+   production deployment following the same pattern, this second layer is
+   currently a no-op — the app-layer scoping in point 1 is the only real
+   protection today. This was caught (not assumed) via real-CI testing: a
+   prior version of this document asserted the connecting role was
+   "confirmed non-superuser," which was false — `tests/test_rls.py` passed
+   locally against a differently-configured local Postgres but failed the
+   first time it actually ran against GitHub Actions' `postgres:16-alpine`
+   service container, exactly because that assumption didn't hold there.
+   CI now creates a second, ordinary (non-superuser, no `BYPASSRLS`) role,
+   `bpo_app`, after migrations run, and points `tests/test_rls.py` at it —
+   so the RLS policies themselves are proven correct against a real,
+   properly-scoped role. **Extending that same role separation to
+   `docker-compose.yml` (and any real deployment) — a distinct
+   least-privileged runtime role for the API/worker, separate from the
+   schema-owning migration role — is still open, tracked below.**
 
    This means a bug in the app-layer filtering — a missing `WHERE
    organization_id = ...`, a copy-pasted query — would still be blocked by
@@ -143,6 +165,12 @@ evaluated rather than silently ignored:
 
 ## What's not yet implemented (tracked for later phases)
 
+- **A least-privileged, non-superuser runtime role for `docker-compose.yml`
+  and production deployments**, distinct from the schema-owning migration
+  role — see "Tenant isolation" above. Without it, PostgreSQL RLS is a
+  no-op in any environment following this repo's current Compose pattern;
+  CI now proves the RLS policies themselves are correct against such a
+  role (`bpo_app`), but nothing outside CI uses one yet.
 - Rate limiting on the public API (Phase 11 / hardening pass)
 - API key auth for programmatic/MCP clients (Phase 9/11)
 - Browser sandbox isolation for the Playwright worker pool (Phase 4)
