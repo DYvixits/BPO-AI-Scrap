@@ -45,6 +45,11 @@
                 │        │  (frontier) │ objective fit; InformationGain-
                 │        └─────────────┘ Tracker stops the crawl early once
                 │                        required_attributes are satisfied
+          │  Search    │ │  Crawler   │ │ Extraction │
+          │  Engine    │ │  Engine    │ │  Engine    │
+          │(provider   │ │(httpx, SSRF│ │(trafilatura│
+          │ abstraction│ │ guarded)   │ │ + bs4/lxml)│
+          └─────▲──────┘ └────────────┘ └────────────┘
                 │ N queries (deduped by URL)
           ┌─────┴──────┐
           │  Search    │  builds up to MAX_QUERIES=4 targeted
