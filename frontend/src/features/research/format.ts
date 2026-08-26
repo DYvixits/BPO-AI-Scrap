@@ -66,6 +66,11 @@ export function describeEvent(event: ResearchEvent): string {
       const types = Object.keys(counts).join(", ");
       return `Found ${total} commercial signal${total === 1 ? "" : "s"} (${types})`;
     }
+    case "scoring.completed": {
+      const avg = Math.round((payload.average_opportunity_score as number) * 100);
+      const top = Math.round((payload.top_opportunity_score as number) * 100);
+      return `Scored ${payload.count} compan${payload.count === 1 ? "y" : "ies"} — top opportunity ${top}%, average ${avg}%`;
+    }
     case "research.completed":
       return `Done — ${payload.result_count} result${payload.result_count === 1 ? "" : "s"} found`;
     case "research.failed":

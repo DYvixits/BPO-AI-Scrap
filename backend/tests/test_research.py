@@ -104,7 +104,7 @@ async def test_companies_response_includes_verification_and_evidence(
             "<html><head><title>Acme</title>"
             '<meta property="og:site_name" content="Acme">'
             "</head><body><article>"
-            "<p>Acme is hiring across every team this quarter.</p>"
+            "<p>Acme is a fintech company hiring across every team this quarter.</p>"
             + "".join(f"<p>Acme builds great products, sentence {i}.</p>" for i in range(12))
             + "</article></body></html>"
         )
@@ -138,6 +138,10 @@ async def test_companies_response_includes_verification_and_evidence(
     assert len(company["signals"]) == 1
     assert company["signals"][0]["signal_type"] == "hiring"
     assert company["signals"][0]["decayed_strength"] == 1.0
+    assert company["fit_score"]["score"] == 1.0
+    assert company["fit_score"]["matched_factors"] == ["industry:fintech"]
+    assert company["intent_score"]["score"] > 0.0
+    assert 0.0 < company["opportunity_score"]["score"] <= 1.0
 
 
 @pytest.mark.asyncio

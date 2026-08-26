@@ -3,6 +3,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from app.schemas.commercial_signal import CommercialSignalOut
+from app.schemas.scoring import FitScoreOut, IntentScoreOut, OpportunityScoreOut
 from app.schemas.verification import ConfidenceScoreOut, EvidenceOut
 
 
@@ -30,3 +31,8 @@ class CompanyOut(BaseModel):
     # engines/commercial_signals (AUDIT_BPO_CRM.md Phase 7) — same
     # populated-once-after-resolution lifecycle as the fields above.
     signals: list[CommercialSignalOut] = []
+    # engines/{fit,intent,opportunity}_scoring (AUDIT_BPO_CRM.md Phase 8)
+    # — same populated-once-after-resolution lifecycle as the fields above.
+    fit_score: FitScoreOut | None = None
+    intent_score: IntentScoreOut | None = None
+    opportunity_score: OpportunityScoreOut | None = None

@@ -43,6 +43,9 @@ from app.engines.entity_resolution.resolver import ResolvablePage, resolve_compa
 from app.engines.extraction.content import ExtractedContent, extract_content
 from app.engines.extraction.dedup import NearDuplicateDetector
 from app.engines.extraction.structured import extract_structured_data
+from app.engines.fit_scoring.engine import compute_fit
+from app.engines.intent_scoring.engine import SignalInput, compute_intent
+from app.engines.opportunity_scoring.engine import compute_momentum, compute_opportunity
 from app.engines.query_intelligence.objective import ResearchObjective
 from app.engines.search.base import SearchHit
 from app.engines.search.duckduckgo import DuckDuckGoSearchProvider
@@ -53,6 +56,7 @@ from app.repositories import (
     commercial_signal_repository,
     entity_repository,
     research_repository,
+    scoring_repository,
     verification_repository,
 )
 from app.services.confidence import basic_relevance_score
@@ -396,6 +400,7 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
         page_by_url = {page.url: page for page in crawled_pages}
         verification_counts: dict[str, int] = {}
         signal_counts: dict[str, int] = {}
+        opportunity_scores: list[float] = []
         for resolved in resolved_companies:
             async with _tenant_session(organization_id) as db:
                 company = await entity_repository.add_company(
@@ -437,7 +442,7 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
                     if url in page_by_url
                 ]
                 confidence_result = compute_confidence(evidence_inputs, now=datetime.now(UTC))
-                await verification_repository.add_confidence_score(
+                confidence_score_row = await verification_repository.add_confidence_score(
                     db,
                     organization_id=organization_id,
                     company_id=company.id,
@@ -463,6 +468,7 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
                 # See engines/commercial_signals/detector.py's module
                 # docstring for the time-decay approach and its limits. ---
                 now = datetime.now(UTC)
+                company_signals: list[SignalInput] = []
                 for url in resolved.member_urls:
                     page = page_by_url.get(url)
                     if page is None:
@@ -486,6 +492,62 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
                         signal_counts[detected.signal_type.value] = (
                             signal_counts.get(detected.signal_type.value, 0) + 1
                         )
+                        company_signals.append(
+                            SignalInput(
+                                signal_type=detected.signal_type.value,
+                                polarity=detected.polarity,
+                                decayed_strength=decayed,
+                            )
+                        )
+
+                # --- FIT + INTENT + OPPORTUNITY (AUDIT_BPO_CRM.md Phase 8)
+                # — master spec §4's separate-tables scoring architecture:
+                # Fit (does this company match the query's criteria),
+                # Intent (this company's Commercial Signals, aggregated),
+                # and Opportunity (a disclosed, fixed-weight combination
+                # of Fit/Intent/Confidence/freshness/momentum — see
+                # engines/opportunity_scoring/engine.py's module docstring
+                # for why the weights aren't per-tenant-configurable yet). ---
+                combined_text = " ".join(
+                    page_by_url[url].extracted_text or ""
+                    for url in resolved.member_urls
+                    if url in page_by_url
+                )
+                fit_result = compute_fit(objective, combined_text)
+                fit_score_row = await scoring_repository.add_fit_score(
+                    db,
+                    organization_id=organization_id,
+                    company_id=company.id,
+                    job_id=job_id,
+                    result=fit_result,
+                )
+                intent_result = compute_intent(company_signals)
+                intent_score_row = await scoring_repository.add_intent_score(
+                    db,
+                    organization_id=organization_id,
+                    company_id=company.id,
+                    job_id=job_id,
+                    result=intent_result,
+                )
+                momentum = compute_momentum(company_signals)
+                opportunity_result = compute_opportunity(
+                    fit_score=fit_result.score,
+                    intent_score=intent_result.score,
+                    confidence_score=confidence_result.overall_score,
+                    freshness_score=confidence_result.freshness_score,
+                    momentum=momentum,
+                )
+                await scoring_repository.add_opportunity_score(
+                    db,
+                    organization_id=organization_id,
+                    company_id=company.id,
+                    job_id=job_id,
+                    fit_score_id=fit_score_row.id,
+                    intent_score_id=intent_score_row.id,
+                    confidence_score_id=confidence_score_row.id,
+                    result=opportunity_result,
+                )
+                opportunity_scores.append(opportunity_result.score)
         if resolved_companies:
             await _emit(
                 organization_id, job_id, "entities.resolved", {"count": len(resolved_companies)}
@@ -495,6 +557,18 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
             )
             if signal_counts:
                 await _emit(organization_id, job_id, "signals.detected", {"counts": signal_counts})
+            await _emit(
+                organization_id,
+                job_id,
+                "scoring.completed",
+                {
+                    "count": len(opportunity_scores),
+                    "average_opportunity_score": round(
+                        sum(opportunity_scores) / len(opportunity_scores), 2
+                    ),
+                    "top_opportunity_score": round(max(opportunity_scores), 2),
+                },
+            )
 
         await _set_status(organization_id, job_id, ResearchStatus.EXTRACTING)
         await _set_status(organization_id, job_id, ResearchStatus.COMPLETED)

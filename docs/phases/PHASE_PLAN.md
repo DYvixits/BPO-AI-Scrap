@@ -796,6 +796,150 @@ unstarted phase in sequence, and now has real `confidence_scores` and
 (multi-provider source discovery) and Phase 3 (adaptive Playwright-based
 fetcher), pending direction from whoever's driving next.
 
+## Session 9 verification report — Fit / Intent / Opportunity Scoring
+
+Scope: `AUDIT_BPO_CRM.md`'s Phase 8 (Fit + Intent + Opportunity Scoring —
+master spec §4's explicit "do not blend FIT/INTENT/CONFIDENCE into one
+number" architecture, confirmed as this project's highest-leverage design
+decision back in the original audit). Same implement→test→report
+discipline as Sessions 1–8.
+
+**IMPLEMENTED** — Three new engines, run once per resolved company,
+immediately after Verification and Commercial Signals in the same
+worker loop:
+
+- `app/engines/fit_scoring/engine.py::compute_fit` — checks a company's
+  combined crawled-page text against the query's `industry`/`geography`/
+  `required_attributes`, reusing the exact `INDUSTRY`/`GEOGRAPHY`/
+  `ATTRIBUTES` keyword tables Query Intelligence used to parse those
+  criteria out of the query in the first place — the same "one
+  vocabulary, spent both ways" pattern `crawler/prioritization.py::
+  InformationGainTracker` already established for `required_attributes`,
+  now extended to industry/geography and moved from "did the crawl find
+  this anywhere" to "does this specific company's own evidence show
+  this." `score` is `matched / (matched + unmatched)`; `None`, not `0.0`,
+  when the objective declared zero checkable criteria — nothing to
+  compute fit against, so a number would be fabricated. Not scored:
+  `company_size_min`/`max` (no headcount data is ever extracted from
+  crawled pages anywhere in this codebase).
+- `app/engines/intent_scoring/engine.py::compute_intent` — averages
+  `decayed_strength` across a company's `commercial_signals` rows,
+  unweighted by polarity (a funding round and a round of layoffs both
+  mean something is *changing*, and deciding one is "better" for a given
+  tenant's pitch is a judgment this phase deliberately doesn't make, same
+  reasoning `commercial_signals/detector.py` gives for its own uniform
+  `base_weight`). `0.0`, not `None`, when a company has zero signals —
+  "nothing happening" is itself a real, computed answer.
+- `app/engines/opportunity_scoring/engine.py::compute_opportunity` —
+  master spec §4's `OPPORTUNITY = f(FIT, INTENT, CONFIDENCE, FRESHNESS,
+  MOMENTUM)`. `f` is one fixed, disclosed weighted average
+  (`DEFAULT_WEIGHTS`: fit 0.3, intent 0.3, confidence 0.2, freshness 0.1,
+  momentum 0.1) — not yet the per-tenant-configurable function the spec
+  actually asks for (that needs §56's Configuration Engine, still
+  MISSING) — but every row stores the `weights_used` that produced it, so
+  swapping in real per-tenant weights later is a data change, not a
+  schema change. A `None` Fit score becomes a neutral `0.5` component
+  rather than being dropped from the sum, so it never silently reweights
+  the other four dimensions. `momentum` (`compute_momentum`) is the
+  fraction of a company's signals that are `positive` polarity — a
+  same-snapshot proxy, not a real trend/velocity metric, disclosed as
+  such (see REMAINING).
+
+New tables `fit_scores`, `intent_scores`, `opportunity_scores` (migration
+`0008`, RLS via the same `tenant_isolation` policy as every prior per-job
+table; `opportunity_scores` FKs to all three of `fit_scores`/
+`intent_scores`/`confidence_scores` so "Why This Lead" is a join over
+real rows, not a recomputation). `GET /research/{id}/companies` now
+returns `fit_score`/`intent_score`/`opportunity_score` inline. New
+`scoring.completed` event (`{"count": N, "average_opportunity_score":
+..., "top_opportunity_score": ...}`), fired unconditionally alongside
+`entities.resolved` — every resolved company always gets all three
+scores, unlike Commercial Signals which can legitimately find nothing.
+
+Frontend: `CompanyGroup` gets a prominent `OpportunityBadge` (green ≥70%,
+amber ≥40%, outline below — same banding language as `ResultCard`'s
+confidence badge) placed first in the header, with a tooltip breaking
+down every weighted component and its weight. Companies are now sorted
+by Opportunity Score descending (ties broken by the existing
+most-consolidated-first rule) instead of purely by consolidation — the
+whole point of this score, per the master spec, is surfacing the best
+leads first.
+
+**TESTED** — 25 new tests: 20 pure-logic unit tests across the three
+engines (`tests/test_fit_scoring.py`, `test_intent_scoring.py`,
+`test_opportunity_scoring.py` — no-criteria `None` fit, case-insensitive
+matching, partial multi-criterion fit, zero-signal intent, negative-
+polarity signals still contributing to the intent score, all-zero/all-max
+opportunity inputs, `None` fit falling back to the neutral default,
+custom weights being respected, momentum as a fraction of positive
+signals), 2 full worker-pipeline tests with the network layer stubbed
+(`tests/test_scoring_pipeline.py` — a fintech-mentioning page produces
+`fit.score == 1.0` and a real `funding` contributing signal; a
+criteria-free query produces `fit.score is None` and an opportunity row
+whose `fit_component` correctly falls back to `0.5`), and the existing
+API-layer test in `tests/test_research.py` was extended (not duplicated)
+to assert `fit_score`/`intent_score`/`opportunity_score` all serialize
+correctly through `GET /research/{id}/companies`. 168/168 backend tests
+pass on SQLite (5 skipped — Postgres-only RLS tests); 173/173 pass
+against a real local PostgreSQL with migrations `0001`–`0008` applied,
+pointed at the non-superuser `bpo_app` role — every Fit/Intent/
+Opportunity write in the pipeline tests went through real RLS
+enforcement on the three new tables, and the `0008` migration's
+upgrade/downgrade/upgrade cycle was exercised directly. Backend `ruff
+check`/`ruff format` and frontend `npm run build`/`npm run lint` both
+clean (same 2 pre-existing Fast-Refresh warnings as every prior session).
+
+**WORKING** — confirmed via the pipeline/API tests (real DB writes, real
+scoring logic, only network stubbed — same sandbox constraint as every
+prior session) **and** a live visual check that, unlike every prior
+session's, seeded data by running the *real* worker pipeline against
+real Postgres (via `unittest.mock.patch` on the search/fetch providers,
+the same technique the pytest suite uses) rather than hand-building ORM
+rows — a stronger check for a phase whose new tables carry three
+different foreign keys apiece, where a hand-seeded row could easily hide
+a real FK-wiring bug the actual code path wouldn't. Three companies
+(high/medium/low expected opportunity) were resolved, scored, and
+rendered in a real Chromium browser via Playwright: badges showed 96%
+(green), 41% (amber), and 26% (outline) respectively, in that sorted
+order, and the "Signals:" row appeared only on the company whose page
+text actually matched a signal keyword — confirming both the color
+banding and the new sort-by-opportunity behavior work end to end. No
+bugs were found this session, by either the pipeline tests or the live
+check — the first implementation ran clean, likely because Sessions 7
+and 8's `_age_days`-style tzinfo fix was applied proactively in
+`fit_scoring`/`intent_scoring`/`opportunity_scoring` from the start
+rather than being discovered by a failing test (these three engines
+don't handle datetimes directly at all, sidestepping that whole class of
+bug by construction).
+
+**REMAINING** — `f` in `OPPORTUNITY = f(...)` is a single fixed default
+weighting for every tenant, not the per-tenant-configurable function
+master spec §4/§56 actually specifies — that needs a Configuration Engine
+this codebase doesn't have yet. `momentum` is a same-snapshot proxy
+(fraction of positive-polarity signals in this one job), not a measured
+trend — real momentum needs the same company observed across multiple
+jobs over time, and `companies`/`commercial_signals`/the new scoring
+tables are all scoped per `research_job`, not tracked across repeated
+research on the same company (the same limitation Phase 5's and Phase
+7's REMAINING sections already flagged; Phase 10 Monitoring's job, not
+this one's). Fit Scoring only checks three of the objective's fields —
+`company_size_min`/`max` are never assessed, and `target_entities`/
+`signals`/`freshness` are deliberately out of Fit's scope (freshness is
+Verification's job, signals are Intent's). All three new scores are
+computed once, at pipeline-completion time, and don't update themselves
+as new evidence or signals would appear on a re-crawl — same disclosed
+non-live-updating limitation every score in this codebase carries since
+Session 7.
+
+**NEXT** — per `AUDIT_BPO_CRM.md`'s approved phase table: Phase 9 (CRM
+Integration — moved up from its original position specifically because a
+tenant gets value from Phases 2–8 landing in their CRM well before a
+knowledge graph exists) is the next unstarted phase in sequence, and now
+has a real Opportunity Score to export/push — or the still-open
+remainders of Phase 2 (multi-provider source discovery) and Phase 3
+(adaptive Playwright-based fetcher), pending direction from whoever's
+driving next.
+
 ## Phase 1 — Foundation
 
 **Scope delivered:** monorepo layout; FastAPI app factory with health check

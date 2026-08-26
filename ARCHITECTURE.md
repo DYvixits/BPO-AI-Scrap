@@ -62,9 +62,16 @@
                 │                                                   ┌───────────────┐
                 │                                                   │  Commercial    │  scans the company's
                 │                                                   │Signal Engine   │  own pages for the same
-                │                                                   └───────────────┘  keyword vocabulary Query
-                │                                                                       Intelligence uses on the
-                │                                                                       query, time-decayed
+                │                                                   └───────┬───────┘  keyword vocabulary Query
+                │                                                           │           Intelligence uses on the
+                │                                                           │           query, time-decayed
+                │                                                           ▼
+                │                                                   ┌───────────────┐
+                │                                                   │ Fit / Intent / │  Fit: objective-criteria
+                │                                                   │ Opportunity    │  match. Intent: signals
+                │                                                   │   Scoring      │  aggregated. Opportunity:
+                │                                                   └───────────────┘  disclosed weighted combo
+                │                                                                       of both + Confidence
                 │ N queries (deduped by URL)
           ┌─────┴──────┐
           │  Search    │  builds up to MAX_QUERIES=4 targeted
@@ -138,9 +145,13 @@ bpo-ai-scrap/
 │   │   │   │                       # cross-domain exact name match)
 │   │   │   ├── verification/       # engine.py — per-Company confidence score
 │   │   │   │                       # from source count/diversity/freshness
-│   │   │   └── commercial_signals/ # detector.py — keyword-matched commercial
-│   │   │                           # events (funding/hiring/...) with
-│   │   │                           # time-decayed strength
+│   │   │   ├── commercial_signals/ # detector.py — keyword-matched commercial
+│   │   │   │                       # events (funding/hiring/...) with
+│   │   │   │                       # time-decayed strength
+│   │   │   ├── fit_scoring/        # engine.py — objective-criteria match score
+│   │   │   ├── intent_scoring/     # engine.py — aggregates Commercial Signals
+│   │   │   └── opportunity_scoring/ # engine.py — disclosed weighted combination
+│   │   │                            # of Fit/Intent/Confidence/freshness/momentum
 │   │   ├── workers/
 │   │   │   ├── worker.py           # arq WorkerSettings
 │   │   │   └── tasks/research.py   # the research pipeline job
@@ -272,15 +283,48 @@ commercial_signals
   # signals): one row per keyword match per crawled page — computed once,
   # at pipeline-completion time, same disclosed staleness limitation as
   # confidence_scores above
+
+fit_scores
+  id (uuid pk), organization_id fk, company_id fk (unique), research_job_id
+    fk, score (float, nullable — null when the objective had zero
+    checkable criteria), matched_factors (json list of strings, e.g.
+    "industry:fintech"), unmatched_factors (json list), created_at
+  # the Fit Scoring Engine's output (app/engines/fit_scoring) — does this
+  # company's own evidence satisfy the industry/geography/required_
+  # attributes the query asked for; company_size not scored (no headcount
+  # data extracted anywhere in this codebase)
+
+intent_scores
+  id (uuid pk), organization_id fk, company_id fk (unique), research_job_id
+    fk, score (float — mean decayed_strength across the company's
+    commercial_signals, 0.0 if none), contributing_signals (json list of
+    {signal_type, polarity, decayed_strength}), created_at
+  # the Intent Scoring Engine's output (app/engines/intent_scoring) —
+  # unweighted by polarity; see that module's docstring for why
+
+opportunity_scores
+  id (uuid pk), organization_id fk, company_id fk (unique), research_job_id
+    fk, fit_score_id/intent_score_id/confidence_score_id fk (all not
+    null), score (float), fit_component/intent_component/
+    confidence_component/freshness_component/momentum_component (float
+    — the exact numbers that went into `score`), weights_used (json dict),
+    created_at
+  # master spec §4's OPPORTUNITY = f(FIT, INTENT, CONFIDENCE, FRESHNESS,
+  # MOMENTUM) — a fixed, disclosed default weighting (app/engines/
+  # opportunity_scoring), not yet per-tenant-configurable (that needs
+  # master spec §56's Configuration Engine, still MISSING); momentum is a
+  # same-snapshot proxy (fraction of positive-polarity signals), not a
+  # real trend/velocity metric — see that module's docstring
 ```
 
 All tables use UUID primary keys and are scoped by `organization_id` for
 tenant isolation. `organization_id` is denormalized directly onto
 `research_events`/`sources`/`crawl_pages`/`research_results`/`companies`/
-`entity_aliases`/`evidence`/`confidence_scores`/`commercial_signals`
-(rather than living only on `research_jobs` and requiring a join) for two
-reasons: it keeps app-layer filters and indexes simple, and it's what
-makes PostgreSQL Row-Level
+`entity_aliases`/`evidence`/`confidence_scores`/`commercial_signals`/
+`fit_scores`/`intent_scores`/`opportunity_scores` (rather than living only
+on `research_jobs` and requiring a join) for two reasons: it keeps
+app-layer filters and indexes simple, and it's what makes PostgreSQL
+Row-Level
 Security on those tables a plain equality check instead of a subquery —
 see SECURITY.md §"Tenant isolation" for the full RLS design, including why
 `research_jobs` itself is deliberately excluded from RLS.
@@ -317,8 +361,10 @@ GET    /api/v1/research/{id}       → job detail + status
 GET    /api/v1/research/{id}/results
 GET    /api/v1/research/{id}/companies  → resolved companies for this job,
                                            each with its confidence_score,
-                                           evidence (Phase 6), and signals
-                                           (Phase 7)
+                                           evidence (Phase 6), signals
+                                           (Phase 7), and fit_score/
+                                           intent_score/opportunity_score
+                                           (Phase 8)
 WS     /api/v1/research/{id}/ws    → live progress events
 
 GET    /api/v1/health              → liveness/readiness (checks DB + Redis)
@@ -440,6 +486,36 @@ token's claims — a user can never read another organization's job.
   discloses for evidence freshness, since no real event date is extracted
   from page prose. Runs once per company, immediately after Verification,
   in the same worker loop.
+- `app/engines/fit_scoring/engine.py::compute_fit` — Phase 8: checks a
+  company's combined crawled-page text against the objective's
+  `industry`/`geography`/`required_attributes`, reusing the exact
+  `INDUSTRY`/`GEOGRAPHY`/`ATTRIBUTES` keyword tables Query Intelligence
+  used to parse those criteria out of the query (the same "one vocabulary,
+  spent both ways" pattern `crawler/prioritization.py::
+  InformationGainTracker` already established). `score` is `None`, not
+  `0.0`, when the objective declared no checkable criteria at all —
+  nothing to compute fit against. `company_size_min`/`max` are not
+  scored (no headcount data is ever extracted).
+- `app/engines/intent_scoring/engine.py::compute_intent` — Phase 8:
+  averages `decayed_strength` across a company's `commercial_signals`
+  rows, unweighted by polarity (a funding round and a round of layoffs
+  both mean something is *changing*, and this phase doesn't judge which
+  is "better" for a given tenant). `0.0`, not `None`, when a company has
+  no detected signals — that's a real, computed answer.
+- `app/engines/opportunity_scoring/engine.py::compute_opportunity` —
+  Phase 8: master spec §4's `OPPORTUNITY = f(FIT, INTENT, CONFIDENCE,
+  FRESHNESS, MOMENTUM)`. `f` is one fixed, disclosed weighted average
+  (`DEFAULT_WEIGHTS` — fit 0.3, intent 0.3, confidence 0.2, freshness 0.1,
+  momentum 0.1) stored on every row as `weights_used`, not yet a
+  per-tenant setting (needs master spec §56's Configuration Engine, still
+  MISSING). A `None` Fit score is treated as a neutral `0.5` component
+  rather than dropped, so it never silently reweights the other four
+  dimensions. `momentum` (`compute_momentum`) is the fraction of a
+  company's signals that are `positive` polarity — a same-snapshot proxy,
+  not a real trend/velocity metric, since `companies`/`commercial_signals`
+  aren't tracked across repeated jobs on the same company yet (Phase 10
+  Monitoring's job). Runs once per company, immediately after Commercial
+  Signals, in the same worker loop.
 
 ## 8. Risks identified going in
 

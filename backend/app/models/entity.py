@@ -8,6 +8,7 @@ from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
     from app.models.commercial_signal import CommercialSignal
+    from app.models.scoring import FitScore, IntentScore, OpportunityScore
     from app.models.verification import ConfidenceScore, Evidence
 
 
@@ -53,6 +54,15 @@ class Company(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # one-directional, populated-once-after-resolution lifecycle as
     # evidence/confidence_score above.
     signals: Mapped[list["CommercialSignal"]] = relationship(cascade="all, delete-orphan")
+    # engines/{fit,intent,opportunity}_scoring (AUDIT_BPO_CRM.md Phase 8)
+    # — same populated-once-after-resolution lifecycle as the fields above.
+    fit_score: Mapped["FitScore | None"] = relationship(uselist=False, cascade="all, delete-orphan")
+    intent_score: Mapped["IntentScore | None"] = relationship(
+        uselist=False, cascade="all, delete-orphan"
+    )
+    opportunity_score: Mapped["OpportunityScore | None"] = relationship(
+        uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class EntityAlias(UUIDPrimaryKeyMixin, TimestampMixin, Base):

@@ -15,6 +15,7 @@ import type {
   CommercialSignalType,
   Company,
   ConfidenceScore,
+  OpportunityScore,
   ResearchEvent,
   ResearchObjective,
   ResearchResult,
@@ -58,11 +59,15 @@ export function ResearchDetailPage() {
       }
       groups.get(key)!.results.push(result);
     }
-    // Grouped companies first (most members first — the most consolidated
-    // picture of a company), ungrouped results last.
+    // Grouped companies first, highest Opportunity Score first (Phase 8 —
+    // the master spec's whole point of this score is surfacing the best
+    // leads first), most-consolidated as a tiebreaker, ungrouped last.
     return [...groups.values()].sort((a, b) => {
       if (!a.company) return 1;
       if (!b.company) return -1;
+      const aScore = a.company.opportunity_score?.score ?? -1;
+      const bScore = b.company.opportunity_score?.score ?? -1;
+      if (aScore !== bScore) return bScore - aScore;
       return b.results.length - a.results.length;
     });
   }, [results, companies]);
@@ -253,6 +258,7 @@ function CompanyGroup({
     <div className="flex flex-col gap-2">
       <div className="flex flex-col gap-1 border-b border-border pb-1.5">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          {company.opportunity_score && <OpportunityBadge score={company.opportunity_score} />}
           <h3 className="font-medium">{company.canonical_name}</h3>
           {company.confidence_score && <VerificationBadge score={company.confidence_score} />}
           {domainAliases.length > 1 && (
@@ -276,6 +282,29 @@ function CompanyGroup({
       {company.evidence.length > 0 && <EvidenceDisclosure evidence={company.evidence} />}
       {company.signals.length > 0 && <SignalChips signals={company.signals} />}
     </div>
+  );
+}
+
+function OpportunityBadge({ score }: { score: OpportunityScore }) {
+  const pct = Math.round(score.score * 100);
+  const variant = pct >= 70 ? "success" : pct >= 40 ? "warning" : "outline";
+  const componentLine = (label: string, value: number, weight: number) =>
+    `${label}: ${Math.round(value * 100)}% (weight ${Math.round(weight * 100)}%)`;
+  const title = [
+    "Opportunity = weighted combination of Fit, Intent, Confidence, freshness, and momentum —",
+    "a disclosed, fixed default weighting, not yet per-tenant configurable.",
+    "",
+    componentLine("Fit", score.fit_component, score.weights_used.fit),
+    componentLine("Intent", score.intent_component, score.weights_used.intent),
+    componentLine("Confidence", score.confidence_component, score.weights_used.confidence),
+    componentLine("Freshness", score.freshness_component, score.weights_used.freshness),
+    componentLine("Momentum", score.momentum_component, score.weights_used.momentum),
+  ].join("\n");
+
+  return (
+    <Badge variant={variant} title={title} className="font-semibold">
+      Opportunity {pct}%
+    </Badge>
   );
 }
 

@@ -102,7 +102,7 @@ Same shape plus `events: ResearchEvent[]` (the append-only progress log).
 the two cases are indistinguishable by design (no cross-tenant existence
 leak).
 
-### `GET /research/{id}/companies` (Phase 5 + Phase 6 + Phase 7)
+### `GET /research/{id}/companies` (Phase 5 + Phase 6 + Phase 7 + Phase 8)
 
 ```json
 [
@@ -139,7 +139,27 @@ leak).
         "base_weight": 1.0,
         "decayed_strength": 0.94
       }
-    ]
+    ],
+    "fit_score": {
+      "score": 1.0,
+      "matched_factors": ["industry:fintech", "geography:Kenya"],
+      "unmatched_factors": []
+    },
+    "intent_score": {
+      "score": 0.94,
+      "contributing_signals": [
+        { "signal_type": "funding", "polarity": "positive", "decayed_strength": 0.94 }
+      ]
+    },
+    "opportunity_score": {
+      "score": 0.87,
+      "fit_component": 1.0,
+      "intent_component": 0.94,
+      "confidence_component": 0.89,
+      "freshness_component": 1.0,
+      "momentum_component": 1.0,
+      "weights_used": { "fit": 0.3, "intent": 0.3, "confidence": 0.2, "freshness": 0.1, "momentum": 0.1 }
+    }
   }
 ]
 ```
@@ -166,6 +186,22 @@ detection this codebase's claim extraction doesn't provide (see
 least 3 distinct domains. `evidence` lists every crawled page counted
 toward that score — the auditable trail behind the number, not a
 claim-by-claim fact check.
+
+`fit_score`/`intent_score`/`opportunity_score` (Phase 8, `app/engines/
+{fit,intent,opportunity}_scoring`) implement master spec §4's separate
+FIT/INTENT/CONFIDENCE/OPPORTUNITY tables — deliberately not blended into
+one column. `fit_score.score` is `matched / (matched + unmatched)` factors
+against the query's declared `industry`/`geography`/`required_attributes`
+— `null` when the query declared none (nothing to check fit against, not
+a bad fit). `intent_score.score` is the mean `decayed_strength` across
+the company's `signals` above, `0.0` if it has none. `opportunity_score`
+combines all of the above with `confidence_score.overall_score`,
+`confidence_score.freshness_score`, and a `momentum` proxy (fraction of
+the company's signals that are `positive` polarity — not a real
+trend/velocity metric) via a fixed default weighting recorded on every
+row as `weights_used` — not yet per-tenant configurable. A `null` Fit
+score is treated as a neutral `0.5` component in the combination, not
+dropped.
 
 `signals` (Phase 7, `app/engines/commercial_signals`) lists commercial
 events (funding, hiring, a leadership change, ...) found by keyword match
@@ -201,8 +237,8 @@ Browser WebSocket clients can't set headers, so auth is a query param:
 kinds as the `events` array on the job (`status.changed, search.completed,
 sources.discovered, page.completed, page.failed, crawl.expanded,
 crawl.stopped_early, entities.resolved, verification.completed,
-signals.detected, research.completed, research.failed`), as JSON text
-frames, as they happen.
+signals.detected, scoring.completed, research.completed,
+research.failed`), as JSON text frames, as they happen.
 
 `page.completed`'s payload also carries `duplicate_reason` (Phase 4):
 `"exact_hash"` when the page's content is byte-identical to one already
@@ -243,6 +279,13 @@ a job to complete with real companies and zero signals (most crawled
 pages don't happen to mention funding, hiring, etc.), and this event
 simply doesn't fire in that case. See `GET /research/{id}/companies`
 above for what each signal type means.
+
+`scoring.completed` (`{"count": N, "average_opportunity_score": 0.62,
+"top_opportunity_score": 0.87}`, Phase 8) fires once per job, unconditionally
+whenever `entities.resolved` also fires (every resolved company always
+gets a Fit/Intent/Opportunity score, unlike signals) — `N` equals the
+company count. See `GET /research/{id}/companies` above for the
+per-company breakdown.
 
 ## Health
 
