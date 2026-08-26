@@ -11,7 +11,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { describeEvent, STATUS_LABEL, statusProgressPercent } from "@/features/research/format";
 import { getResearch, getResearchCompanies, getResearchResults } from "@/features/research/api";
 import { useResearchEvents } from "@/features/research/useResearchEvents";
-import type { Company, ResearchEvent, ResearchObjective, ResearchResult } from "@/types/api";
+import type {
+  Company,
+  ConfidenceScore,
+  ResearchEvent,
+  ResearchObjective,
+  ResearchResult,
+  TruthStatus,
+} from "@/types/api";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed"]);
 
@@ -246,6 +253,7 @@ function CompanyGroup({
       <div className="flex flex-col gap-1 border-b border-border pb-1.5">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <h3 className="font-medium">{company.canonical_name}</h3>
+          {company.confidence_score && <VerificationBadge score={company.confidence_score} />}
           {domainAliases.length > 1 && (
             <span
               className="rounded-full bg-secondary/60 px-2 py-0.5 text-xs text-muted-foreground"
@@ -264,6 +272,68 @@ function CompanyGroup({
           <ResultCard key={result.id} result={result} />
         ))}
       </div>
+      {company.evidence.length > 0 && <EvidenceDisclosure evidence={company.evidence} />}
+    </div>
+  );
+}
+
+const VERIFICATION_LABEL: Record<TruthStatus, string> = {
+  verified: "Verified",
+  corroborated: "Corroborated",
+  uncertain: "Uncertain",
+  outdated: "Outdated",
+  unverifiable: "Unverifiable",
+};
+
+const VERIFICATION_VARIANT: Record<TruthStatus, "success" | "default" | "warning" | "outline"> = {
+  verified: "success",
+  corroborated: "default",
+  uncertain: "warning",
+  outdated: "outline",
+  unverifiable: "outline",
+};
+
+function VerificationBadge({ score }: { score: ConfidenceScore }) {
+  return (
+    <Badge
+      variant={VERIFICATION_VARIANT[score.status]}
+      title={`${score.source_count} source${score.source_count === 1 ? "" : "s"} from ${score.source_diversity} distinct domain${score.source_diversity === 1 ? "" : "s"} — a disclosed, source-count-based signal, not a claim-by-claim fact check. See "View evidence" below.`}
+    >
+      {VERIFICATION_LABEL[score.status]}
+    </Badge>
+  );
+}
+
+function EvidenceDisclosure({ evidence }: { evidence: Company["evidence"] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-xs font-medium text-primary hover:underline"
+      >
+        {open ? "Hide evidence" : `View evidence (${evidence.length})`}
+      </button>
+      {open && (
+        <ul className="mt-2 flex flex-col gap-2 rounded-md bg-secondary/60 p-3">
+          {evidence.map((item) => (
+            <li key={item.source_url} className="text-xs">
+              <a
+                href={item.source_url}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-primary hover:underline"
+              >
+                {item.domain}
+              </a>
+              {item.excerpt && (
+                <p className="mt-0.5 line-clamp-2 text-muted-foreground">{item.excerpt}</p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

@@ -50,8 +50,14 @@
                 │                                                   │    Entity      │  runs once, after
                 │                                                   │  Resolution    │  crawling ends: groups
                 │                                                   │   Engine       │  pages into Company
-                │                                                   └───────────────┘  rows (same-domain, then
-                │                                                                       cross-domain name match)
+                │                                                   └───────┬───────┘  rows (same-domain, then
+                │                                                           │           cross-domain name match)
+                │                                                           ▼
+                │                                                   ┌───────────────┐
+                │                                                   │ Verification   │  per company: source
+                │                                                   │    Engine      │  count/diversity/
+                │                                                   └───────────────┘  freshness -> a Truth
+                │                                                                       Engine status + evidence
                 │ N queries (deduped by URL)
           ┌─────┴──────┐
           │  Search    │  builds up to MAX_QUERIES=4 targeted
@@ -120,9 +126,11 @@ bpo-ai-scrap/
 │   │   │   ├── extraction/         # trafilatura main-content text pass +
 │   │   │   │                       # structured.py (JSON-LD/OG/contact, pass 2)
 │   │   │   │                       # + dedup.py (near-duplicate shingle/Jaccard)
-│   │   │   └── entity_resolution/  # resolver.py — groups crawled pages into
-│   │   │                           # Company rows (same-domain, then
-│   │   │                           # cross-domain exact name match)
+│   │   │   ├── entity_resolution/  # resolver.py — groups crawled pages into
+│   │   │   │                       # Company rows (same-domain, then
+│   │   │   │                       # cross-domain exact name match)
+│   │   │   └── verification/       # engine.py — per-Company confidence score
+│   │   │                           # from source count/diversity/freshness
 │   │   ├── workers/
 │   │   │   ├── worker.py           # arq WorkerSettings
 │   │   │   └── tasks/research.py   # the research pipeline job
@@ -221,17 +229,35 @@ entity_aliases
     "name" | "domain"), value, source_url, created_at
   # every distinct candidate name and every merged domain, with the page
   # it came from — the resolver's evidence trail
+
+evidence
+  id (uuid pk), organization_id fk, company_id fk, source_url, domain,
+  excerpt (nullable), created_at
+  # one row per crawled page counted toward a company's confidence score
+  # (app/engines/verification) — page-level, not claim-level; see that
+  # module's docstring for why
+
+confidence_scores
+  id (uuid pk), organization_id fk, company_id fk (unique — one row per
+    company), status (enum: unverifiable|uncertain|corroborated|verified|
+    outdated), source_count, source_diversity, freshness_score,
+    evidence_completeness, overall_score, created_at
+  # the Verification Engine's output: 5 of the master spec's 7 Truth
+  # Engine states, computed from source count/diversity/freshness alone
+  # — no claim-level agreement/contradiction detection (PROBABLE and
+  # CONTRADICTED are not computed), a disclosed scope limit, not an
+  # oversight
 ```
 
 All tables use UUID primary keys and are scoped by `organization_id` for
 tenant isolation. `organization_id` is denormalized directly onto
 `research_events`/`sources`/`crawl_pages`/`research_results`/`companies`/
-`entity_aliases` (rather than living only on `research_jobs` and requiring a
-join) for two reasons: it keeps app-layer filters and indexes simple, and
-it's what makes PostgreSQL Row-Level Security on those tables a plain
-equality check instead of a subquery — see SECURITY.md §"Tenant isolation"
-for the full RLS design, including why `research_jobs` itself is
-deliberately excluded from RLS.
+`entity_aliases`/`evidence`/`confidence_scores` (rather than living only on
+`research_jobs` and requiring a join) for two reasons: it keeps app-layer
+filters and indexes simple, and it's what makes PostgreSQL Row-Level
+Security on those tables a plain equality check instead of a subquery —
+see SECURITY.md §"Tenant isolation" for the full RLS design, including why
+`research_jobs` itself is deliberately excluded from RLS.
 
 `research_jobs.status` state machine (subset of the full 71-state spec target):
 
@@ -263,7 +289,9 @@ POST   /api/v1/research            → create + enqueue a research job
 GET    /api/v1/research            → list jobs for caller's org
 GET    /api/v1/research/{id}       → job detail + status
 GET    /api/v1/research/{id}/results
-GET    /api/v1/research/{id}/companies  → resolved companies for this job
+GET    /api/v1/research/{id}/companies  → resolved companies for this job,
+                                           each with its confidence_score
+                                           and evidence (Phase 6)
 WS     /api/v1/research/{id}/ws    → live progress events
 
 GET    /api/v1/health              → liveness/readiness (checks DB + Redis)
@@ -358,6 +386,19 @@ token's claims — a user can never read another organization's job.
   a cross-domain name-match merge — a disclosed number, not a verified
   claim. Runs once per job, after crawling ends, in
   `app/workers/tasks/research.py`.
+- `app/engines/verification/engine.py::compute_confidence` — Phase 6: a
+  disclosed, source-count-based confidence score for each resolved
+  Company, computed from the same crawled pages Entity Resolution just
+  grouped (source_count/source_diversity/freshness_score/
+  evidence_completeness). `status` is 5 of the master spec's 7 Truth
+  Engine states (`UNVERIFIABLE, UNCERTAIN, CORROBORATED, VERIFIED,
+  OUTDATED`) — `PROBABLE`/`CONTRADICTED` are not computed, since both
+  need claim-level agreement/conflict detection that this codebase's
+  claim extraction (still MISSING, per AUDIT_BPO_CRM.md's target-services
+  table) doesn't provide yet. A company is never `VERIFIED` without at
+  least `VERIFIED_MIN_DOMAINS` (3) independent domains, per master spec
+  §98. Runs once per company, immediately after Entity Resolution writes
+  it, in the same worker loop.
 
 ## 8. Risks identified going in
 

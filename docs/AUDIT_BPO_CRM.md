@@ -265,8 +265,8 @@ breaks. Everything else is either reuse-as-is or net-new addition.
 | Content Extraction Engine | REUSE/EXTEND — trafilatura-based, needs multi-pass (§29) |
 | Entity Resolution Engine | MISSING |
 | Data Enrichment Engine | MISSING |
-| Verification Engine | MISSING (today's `confidence.py` is a placeholder, not this) |
-| Evidence Engine | MISSING — no `Claim`/`Evidence` tables yet |
+| Verification Engine | PARTIAL — `app/engines/verification` computes a company-level, source-count-based confidence score (5 of 7 Truth Engine states); `confidence.py`'s per-page placeholder still exists separately, deliberately not retired (see Phase 6 row below) |
+| Evidence Engine | PARTIAL — an `evidence` table exists, but it's page-level (which crawled pages support a company), not claim-level; no `Claim` table, so no claim-to-excerpt linking yet |
 | Commercial Signal Engine | MISSING |
 | Intent Engine | MISSING |
 | Fit Scoring Engine | MISSING |
@@ -339,7 +339,7 @@ this as a proposal to confirm, not a decision made unilaterally**:
 | 3 | Crawler Engine (adaptive strategy, goal-driven prioritization, NextBestURL, information gain, early stopping) | Goal-driven prioritization (NextBestURL scoring, same-domain link discovery, information-gain early stopping) ✅ done — see `docs/phases/PHASE_PLAN.md`'s Session 4 verification report; adaptive strategy selection (Playwright for JS-heavy pages, sitemap/RSS/JSON-LD/PDF discovery) not started |
 | 4 | Extraction + Deduplication (multi-pass extraction, 6-level dedup) | Multi-pass extraction (trafilatura text + JSON-LD/OG/contact structured data) + 3-layer dedup (URL normalization, exact-hash, near-duplicate shingle/Jaccard) ✅ done — see `docs/phases/PHASE_PLAN.md`'s Session 5 verification report; "6-level dedup" was never broken down anywhere in this repo's docs, so 3 more levels remain undefined, not just unimplemented |
 | 5 | Entity Resolution | Company-only entity resolution (same-registrable-domain grouping + cross-domain merge on exact normalized-name match, `match_confidence` 1.0/0.7) ✅ done — see `docs/phases/PHASE_PLAN.md`'s Session 6 verification report; person-entity resolution (same person across pages/sources) not started |
-| 6 | Verification + Evidence (retires the placeholder confidence column) | Placeholder only |
+| 6 | Verification + Evidence (retires the placeholder confidence column) | Company-level, source-count-based verification (per-company `confidence_scores` + page-level `evidence`, 5 of 7 Truth Engine states — `UNVERIFIABLE/UNCERTAIN/CORROBORATED/VERIFIED/OUTDATED`) ✅ done — see `docs/phases/PHASE_PLAN.md`'s Session 7 verification report; `PROBABLE`/`CONTRADICTED` and all claim-level agreement/contradiction detection not started (needs claim extraction, still MISSING); the Phase 1–3 placeholder `research_results.confidence` was deliberately *not* retired — see that report's REMAINING section for why |
 | 7 | Commercial Signals + Temporal Decay | Not started |
 | 8 | **Fit + Intent + Opportunity Scoring** (moved up from implicit position — this is the CRM-facing payoff) | Not started |
 | 9 | **CRM Integration** (export/push/dedup-against-CRM) — *moved up from Phase 11*: a tenant gets value from Phases 2–8 landing in their CRM well before a knowledge graph exists | Not started |

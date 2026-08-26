@@ -1,9 +1,13 @@
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+
+if TYPE_CHECKING:
+    from app.models.verification import ConfidenceScore, Evidence
 
 
 class Company(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -34,6 +38,15 @@ class Company(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     aliases: Mapped[list["EntityAlias"]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
+    )
+    # engines/verification (AUDIT_BPO_CRM.md Phase 6) — populated once,
+    # after entity resolution, alongside aliases above. No back_populates:
+    # nothing in app/models/verification.py needs to navigate back to
+    # Company, so this stays one-directional like the aliases relationship
+    # would if EntityAlias didn't already need the reverse for its own code.
+    evidence: Mapped[list["Evidence"]] = relationship(cascade="all, delete-orphan")
+    confidence_score: Mapped["ConfidenceScore | None"] = relationship(
+        uselist=False, cascade="all, delete-orphan"
     )
 
 

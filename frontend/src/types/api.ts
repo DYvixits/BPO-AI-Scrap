@@ -88,6 +88,23 @@ export interface EntityAlias {
   source_url: string;
 }
 
+export type TruthStatus = "unverifiable" | "uncertain" | "corroborated" | "verified" | "outdated";
+
+export interface Evidence {
+  source_url: string;
+  domain: string;
+  excerpt: string | null;
+}
+
+export interface ConfidenceScore {
+  status: TruthStatus;
+  source_count: number;
+  source_diversity: number;
+  freshness_score: number;
+  evidence_completeness: number;
+  overall_score: number;
+}
+
 export interface Company {
   id: string;
   canonical_name: string;
@@ -95,4 +112,6 @@ export interface Company {
   description: string | null;
   match_confidence: number;
   aliases: EntityAlias[];
+  confidence_score: ConfidenceScore | null;
+  evidence: Evidence[];
 }

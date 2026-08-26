@@ -53,6 +53,13 @@ export function describeEvent(event: ResearchEvent): string {
     }
     case "entities.resolved":
       return `Grouped results into ${payload.count} compan${payload.count === 1 ? "y" : "ies"}`;
+    case "verification.completed": {
+      const counts = payload.counts as Record<string, number>;
+      const parts = Object.entries(counts)
+        .filter(([, n]) => n > 0)
+        .map(([status, n]) => `${n} ${status}`);
+      return parts.length ? `Verification: ${parts.join(", ")}` : "Verification: nothing to score";
+    }
     case "research.completed":
       return `Done — ${payload.result_count} result${payload.result_count === 1 ? "" : "s"} found`;
     case "research.failed":

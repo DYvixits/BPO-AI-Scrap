@@ -21,6 +21,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -45,8 +46,9 @@ from app.engines.query_intelligence.objective import ResearchObjective
 from app.engines.search.base import SearchHit
 from app.engines.search.duckduckgo import DuckDuckGoSearchProvider
 from app.engines.search_strategy.strategy import build_queries
+from app.engines.verification.engine import EvidenceInput, compute_confidence
 from app.models.research import ResearchStatus
-from app.repositories import entity_repository, research_repository
+from app.repositories import entity_repository, research_repository, verification_repository
 from app.services.confidence import basic_relevance_score
 
 logger = logging.getLogger(__name__)
@@ -385,6 +387,8 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
             if page.error is None
         ]
         resolved_companies = resolve_companies(resolvable)
+        page_by_url = {page.url: page for page in crawled_pages}
+        verification_counts: dict[str, int] = {}
         for resolved in resolved_companies:
             async with _tenant_session(organization_id) as db:
                 company = await entity_repository.add_company(
@@ -408,9 +412,48 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
                 await entity_repository.set_results_company(
                     db, job_id=job_id, urls=resolved.member_urls, company_id=company.id
                 )
+
+                # --- VERIFICATION (AUDIT_BPO_CRM.md Phase 6) — a disclosed,
+                # multi-source confidence score for this company, computed
+                # from the same crawled pages Entity Resolution just
+                # grouped. See engines/verification/engine.py's module
+                # docstring for exactly what this does and doesn't cover. ---
+                evidence_inputs = [
+                    EvidenceInput(
+                        domain=urlparse(url).netloc,
+                        source_url=url,
+                        excerpt=(page_by_url[url].extracted_text or "")[:300]
+                        or page_by_url[url].title,
+                        crawled_at=page_by_url[url].created_at,
+                    )
+                    for url in resolved.member_urls
+                    if url in page_by_url
+                ]
+                confidence_result = compute_confidence(evidence_inputs, now=datetime.now(UTC))
+                await verification_repository.add_confidence_score(
+                    db,
+                    organization_id=organization_id,
+                    company_id=company.id,
+                    result=confidence_result,
+                )
+                for evidence_input in evidence_inputs:
+                    await verification_repository.add_evidence(
+                        db,
+                        organization_id=organization_id,
+                        company_id=company.id,
+                        source_url=evidence_input.source_url,
+                        domain=evidence_input.domain,
+                        excerpt=evidence_input.excerpt,
+                    )
+                verification_counts[confidence_result.status.value] = (
+                    verification_counts.get(confidence_result.status.value, 0) + 1
+                )
         if resolved_companies:
             await _emit(
                 organization_id, job_id, "entities.resolved", {"count": len(resolved_companies)}
+            )
+            await _emit(
+                organization_id, job_id, "verification.completed", {"counts": verification_counts}
             )
 
         await _set_status(organization_id, job_id, ResearchStatus.EXTRACTING)

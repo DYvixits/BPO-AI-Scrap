@@ -551,6 +551,135 @@ still-open remainders of Phase 2 (multi-provider source discovery) and
 Phase 3 (adaptive Playwright-based fetcher), pending direction from
 whoever's driving next.
 
+## Session 7 verification report — Verification Engine
+
+Scope: `AUDIT_BPO_CRM.md`'s Phase 6. The master spec's Phase 6 asks for a
+lot: multi-source corroboration, an Evidence Engine linking every *claim*
+to its source excerpt, a Contradiction Engine, and a 7-state Truth Engine
+(`VERIFIED, CORROBORATED, PROBABLE, UNCERTAIN, CONTRADICTED, OUTDATED,
+UNVERIFIABLE`). None of that is reachable honestly in one session, because
+it all assumes claim extraction (structured subject–predicate–object
+facts, e.g. "founded_year: 2021") — and claim extraction was never built
+in this codebase; `AUDIT_BPO_CRM.md`'s own services table still lists
+"Evidence Engine — MISSING — no Claim/Evidence tables yet" as of the start
+of this session. Rather than fabricate claim-level agreement/contradiction
+detection this repo has no data to support, this session builds
+verification one level up — at the company/source level, using only real
+signals Entity Resolution already produces — and says plainly below
+exactly which 5 of the 7 Truth Engine states are actually computed and
+why the other 2 aren't. Same implement→test→report discipline as
+Sessions 1–6.
+
+**IMPLEMENTED** — `app/engines/verification/engine.py::compute_confidence`:
+for each resolved Company, gathers its crawled pages as `EvidenceInput`
+(domain, source_url, excerpt, crawled_at) and computes `source_count`
+(pages), `source_diversity` (distinct domains — a domain only counts once
+no matter how many of its pages resolved to this company),
+`freshness_score` (1.0 within a 30-day grace period, decaying linearly to
+0 by `OUTDATED_DAYS` = 180, using whichever piece of evidence is
+freshest), and `evidence_completeness` (fraction of evidence entries that
+actually carry a non-blank excerpt). `status` is one of `UNVERIFIABLE` (no
+evidence), `UNCERTAIN` (1 domain), `CORROBORATED` (2 domains), `VERIFIED`
+(≥3 domains, per master spec §98's "≥3 independent sources" rule), or
+`OUTDATED` (freshest evidence older than `OUTDATED_DAYS`, which overrides
+diversity — stale evidence from 5 domains is still stale).
+`PROBABLE`/`CONTRADICTED` are not computed — both need to compare what
+different sources actually *claim*, and this phase doesn't build claim
+extraction to make that comparison possible. New tables: `evidence` (one
+row per crawled page counted toward a company's score — page-level, not
+claim-level) and `confidence_scores` (one row per company, migration
+`0006`, RLS via the same `tenant_isolation` policy as every prior
+per-job table). Runs once per company in `app/workers/tasks/research.py`,
+immediately after Entity Resolution writes it — same wave, same
+transaction pattern. New `entities.resolved`-sibling event
+`verification.completed` (`{"counts": {...}}`), and `GET /research/{id}/
+companies` now returns each company's `confidence_score` and `evidence`
+inline (`app/schemas/entity.py::CompanyOut`, eager-loaded via
+`entity_repository.list_companies_for_job`'s `selectinload`).
+
+Frontend: `CompanyGroup`'s header gains a `VerificationBadge` (green
+"Verified", blue "Corroborated", amber "Uncertain", outline "Outdated" —
+color follows the same success/warning/outline vocabulary as `ResultCard`'s
+confidence badge) with a tooltip disclosing the source count/diversity
+behind it, and a "View evidence (N)" disclosure listing each contributing
+domain, link, and excerpt — same collapsed-by-default pattern as
+`ResultCard`'s "Why this score?".
+
+**TESTED** — 26 new tests: 10 pure-logic unit tests for
+`compute_confidence` (`tests/test_verification_engine.py` — every status
+transition, same-domain pages not counting as diversity, one fresh source
+among stale ones avoiding `OUTDATED`, evidence-completeness with
+missing/blank excerpts, the freshness decay curve), 3 full worker-pipeline
+tests with the network layer stubbed (`tests/test_verification_pipeline.py`
+— a single-domain company lands `UNCERTAIN`, a 3-domain merge lands
+`VERIFIED` with the right evidence rows, zero companies means zero
+confidence_scores rows), 1 API-layer test
+(`tests/test_research.py::test_companies_response_includes_verification_
+and_evidence` — hits `GET /research/{id}/companies` through the real
+FastAPI/httpx client and checks the nested `confidence_score`/`evidence`
+JSON actually serializes from the ORM relationships, which the
+pipeline tests querying the DB directly don't exercise). 132/132 backend
+tests pass on SQLite (5 skipped — Postgres-only RLS tests); 137/137 pass
+against a real local PostgreSQL with migrations `0001`–`0006` applied,
+pointed at the non-superuser `bpo_app` role — every Verification Engine
+write in the pipeline tests went through real RLS enforcement on
+`evidence`/`confidence_scores`, and the `0006` migration's upgrade/
+downgrade/upgrade cycle was exercised directly. Backend `ruff check`/
+`ruff format` and frontend `npm run build`/`npm run lint` both clean
+(same 2 pre-existing Fast-Refresh warnings as every prior session).
+
+**WORKING** — confirmed via the pipeline/API tests (real DB writes, real
+scoring logic, only network stubbed — same sandbox constraint as every
+prior session) **and** a live visual check: seeded a `COMPLETED` research
+job directly via the app's SQLAlchemy models with 4 companies, one for
+each computed status (`VERIFIED`/`CORROBORATED`/`UNCERTAIN`/`OUTDATED`),
+then loaded `ResearchDetailPage` in a real Chromium browser via
+Playwright. All 4 badges render with visually distinct colors, tooltips
+show the right source-count language, and the evidence disclosure expands
+to show domain/link/excerpt per source. One real bug was found this way,
+not by the pipeline tests: SQLite silently returns a *naive* datetime for
+a `DateTime(timezone=True)` column on read-back (unlike Postgres, which
+preserves the tzinfo), so `compute_confidence`'s `now - crawled_at`
+subtraction raised `TypeError: can't subtract offset-naive and
+offset-aware datetimes` the moment a real crawled page (not a hand-built
+test fixture) was passed through the pipeline — caught immediately by
+`test_verification_pipeline.py`, not the live check, but it's the same
+category of "a hand-rolled unit-test fixture didn't hit a real
+cross-dialect gap" bug this project has hit before (see Session 5's dedup
+fixture bug). Fixed with a `_age_days()` helper that treats a naive
+timestamp as UTC before subtracting, on both sides, so the same code path
+is correct whether the value came from SQLite or Postgres.
+
+**REMAINING** — No claim-level verification: this phase's `status` and
+`evidence` are about *pages*, not about whether the specific facts on
+those pages agree with each other. `PROBABLE` and `CONTRADICTED` are not
+computed, and won't be until a claim extraction engine exists to give
+them something to compare. "Independent domain" is a proxy for
+independent sourcing, not a verified one — two syndicated copies of the
+same press release on two different domains still count as 2 sources
+today, which is a real, disclosed limitation, not an oversight.
+`confidence_scores` is scoped per `research_job`, like `companies` — a
+company re-researched in a later job gets a fresh, unrelated score, not
+an updated one. Freshness is computed once, at pipeline-completion time,
+so it's nearly always 1.0 for a job that just finished; `OUTDATED` only
+becomes meaningful once a company's evidence is read back long after the
+job ran, or (Phase 10 Monitoring) a job is re-run against the same
+company later. `research_results.confidence` (the Phase 1–3 per-page
+"basic relevance score") is deliberately *not* retired despite
+`AUDIT_BPO_CRM.md`'s phase-table wording — it's kept, unchanged, as a
+lower-level, already-honestly-labeled signal ("basic relevance score, not
+verified") for individual results, including the ones that never get
+grouped into a company at all; `confidence_scores` is a new, separate,
+company-level signal layered on top, not a replacement, because retiring
+the column wholesale would need per-result claim-level confidence this
+phase has no data to compute.
+
+**NEXT** — per `AUDIT_BPO_CRM.md`'s approved phase table: Phase 7
+(Commercial Signals + Temporal Decay) is the next unstarted phase in
+sequence, or the still-open remainders of Phase 2 (multi-provider source
+discovery) and Phase 3 (adaptive Playwright-based fetcher), pending
+direction from whoever's driving next.
+
 ## Phase 1 — Foundation
 
 **Scope delivered:** monorepo layout; FastAPI app factory with health check

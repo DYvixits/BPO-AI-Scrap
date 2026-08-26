@@ -102,7 +102,7 @@ Same shape plus `events: ResearchEvent[]` (the append-only progress log).
 the two cases are indistinguishable by design (no cross-tenant existence
 leak).
 
-### `GET /research/{id}/companies` (Phase 5)
+### `GET /research/{id}/companies` (Phase 5 + Phase 6)
 
 ```json
 [
@@ -116,6 +116,18 @@ leak).
       { "alias_type": "domain", "value": "kesho.example.com", "source_url": "https://kesho.example.com" },
       { "alias_type": "domain", "value": "crunchbase.example.com", "source_url": "https://crunchbase.example.com/kesho" },
       { "alias_type": "name", "value": "Kesho Finance", "source_url": "https://kesho.example.com" }
+    ],
+    "confidence_score": {
+      "status": "corroborated",
+      "source_count": 2,
+      "source_diversity": 2,
+      "freshness_score": 1.0,
+      "evidence_completeness": 1.0,
+      "overall_score": 0.89
+    },
+    "evidence": [
+      { "source_url": "https://kesho.example.com", "domain": "kesho.example.com", "excerpt": "Kesho Finance closed a $4M seed round..." },
+      { "source_url": "https://crunchbase.example.com/kesho", "domain": "crunchbase.example.com", "excerpt": "Crunchbase profile: Kesho Finance, fintech, Nairobi, Kenya." }
     ]
   }
 ]
@@ -132,6 +144,17 @@ not a verified claim (see `SECURITY.md`). Always empty until `status ==
 "completed"`; 404 under the same rules as `GET /research/{id}`.
 `research_results[].company_id` (nullable) links each result to one of
 these companies.
+
+`confidence_score` (Phase 6, `app/engines/verification`) is `null` until
+the Verification Engine has run (same lifecycle as `aliases`). `status` is
+one of `unverifiable | uncertain | corroborated | verified | outdated` —
+5 of the master spec's 7 Truth Engine states; `probable`/`contradicted`
+are not computed, since both need claim-level agreement/conflict
+detection this codebase's claim extraction doesn't provide (see
+`ARCHITECTURE.md` §7). A company is `verified` only with evidence from at
+least 3 distinct domains. `evidence` lists every crawled page counted
+toward that score — the auditable trail behind the number, not a
+claim-by-claim fact check.
 
 ### `GET /research/{id}/results`
 
@@ -152,8 +175,8 @@ Browser WebSocket clients can't set headers, so auth is a query param:
 `wss://.../research/{id}/ws?token=<access_token>`. Streams the same event
 kinds as the `events` array on the job (`status.changed, search.completed,
 sources.discovered, page.completed, page.failed, crawl.expanded,
-crawl.stopped_early, entities.resolved, research.completed,
-research.failed`), as JSON text frames, as they happen.
+crawl.stopped_early, entities.resolved, verification.completed,
+research.completed, research.failed`), as JSON text frames, as they happen.
 
 `page.completed`'s payload also carries `duplicate_reason` (Phase 4):
 `"exact_hash"` when the page's content is byte-identical to one already
@@ -173,10 +196,18 @@ exhausting its `max_pages` budget — either because every `required_attribute`
 the query asked for was found, or because a run of pages in a row found
 nothing new. See `ARCHITECTURE.md` §7 for the scoring/tracking behind both.
 
-`entities.resolved` (`{"count": N}`, Phase 5) fires at most once per job,
-after the crawl loop ends, once the Entity Resolution Engine has grouped
-crawled pages into `N` companies — `0` if no page yielded a usable company
-name. See `GET /research/{id}/companies` above.
+`entities.resolved` (`{"count": N}`, Phase 5) fires once per job, after
+the crawl loop ends, once the Entity Resolution Engine has grouped crawled
+pages into `N` companies — never fires at all if no page yielded a usable
+company name (`N` would be 0, so there's nothing to report). See
+`GET /research/{id}/companies` above.
+
+`verification.completed` (`{"counts": {"verified": 1, "corroborated": 2,
+...}}`, Phase 6) fires immediately after `entities.resolved`, under the
+same "only if there's at least one company" condition — one count per
+Truth Engine status produced for this job's companies (statuses with a
+zero count are omitted, not sent as `0`). See `GET /research/{id}/companies`
+above for what each status means.
 
 ## Health
 
