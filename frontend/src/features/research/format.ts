@@ -60,6 +60,12 @@ export function describeEvent(event: ResearchEvent): string {
         .map(([status, n]) => `${n} ${status}`);
       return parts.length ? `Verification: ${parts.join(", ")}` : "Verification: nothing to score";
     }
+    case "signals.detected": {
+      const counts = payload.counts as Record<string, number>;
+      const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+      const types = Object.keys(counts).join(", ");
+      return `Found ${total} commercial signal${total === 1 ? "" : "s"} (${types})`;
+    }
     case "research.completed":
       return `Done — ${payload.result_count} result${payload.result_count === 1 ? "" : "s"} found`;
     case "research.failed":

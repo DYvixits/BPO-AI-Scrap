@@ -56,8 +56,15 @@
                 │                                                   ┌───────────────┐
                 │                                                   │ Verification   │  per company: source
                 │                                                   │    Engine      │  count/diversity/
-                │                                                   └───────────────┘  freshness -> a Truth
-                │                                                                       Engine status + evidence
+                │                                                   └───────┬───────┘  freshness -> a Truth
+                │                                                           │           Engine status + evidence
+                │                                                           ▼
+                │                                                   ┌───────────────┐
+                │                                                   │  Commercial    │  scans the company's
+                │                                                   │Signal Engine   │  own pages for the same
+                │                                                   └───────────────┘  keyword vocabulary Query
+                │                                                                       Intelligence uses on the
+                │                                                                       query, time-decayed
                 │ N queries (deduped by URL)
           ┌─────┴──────┐
           │  Search    │  builds up to MAX_QUERIES=4 targeted
@@ -129,8 +136,11 @@ bpo-ai-scrap/
 │   │   │   ├── entity_resolution/  # resolver.py — groups crawled pages into
 │   │   │   │                       # Company rows (same-domain, then
 │   │   │   │                       # cross-domain exact name match)
-│   │   │   └── verification/       # engine.py — per-Company confidence score
-│   │   │                           # from source count/diversity/freshness
+│   │   │   ├── verification/       # engine.py — per-Company confidence score
+│   │   │   │                       # from source count/diversity/freshness
+│   │   │   └── commercial_signals/ # detector.py — keyword-matched commercial
+│   │   │                           # events (funding/hiring/...) with
+│   │   │                           # time-decayed strength
 │   │   ├── workers/
 │   │   │   ├── worker.py           # arq WorkerSettings
 │   │   │   └── tasks/research.py   # the research pipeline job
@@ -247,14 +257,30 @@ confidence_scores
   # — no claim-level agreement/contradiction detection (PROBABLE and
   # CONTRADICTED are not computed), a disclosed scope limit, not an
   # oversight
+
+commercial_signals
+  id (uuid pk), organization_id fk, company_id fk, research_job_id fk,
+  signal_type (enum: hiring|expansion|funding|acquisition|
+    leadership_change|product_launch|digital_transformation|layoffs|
+    closure — must stay in sync with query_intelligence/keywords.py's
+    SIGNALS dict), polarity (text: "positive"|"negative"),
+    matched_keyword, excerpt, source_url, base_weight (float, currently
+    uniform 1.0 for every type — see app/engines/commercial_signals/
+    detector.py on why), crawled_at (copied from the source page, the
+    decay's time anchor), decayed_strength (float), created_at
+  # the Commercial Signal Engine's output (app/engines/commercial_
+  # signals): one row per keyword match per crawled page — computed once,
+  # at pipeline-completion time, same disclosed staleness limitation as
+  # confidence_scores above
 ```
 
 All tables use UUID primary keys and are scoped by `organization_id` for
 tenant isolation. `organization_id` is denormalized directly onto
 `research_events`/`sources`/`crawl_pages`/`research_results`/`companies`/
-`entity_aliases`/`evidence`/`confidence_scores` (rather than living only on
-`research_jobs` and requiring a join) for two reasons: it keeps app-layer
-filters and indexes simple, and it's what makes PostgreSQL Row-Level
+`entity_aliases`/`evidence`/`confidence_scores`/`commercial_signals`
+(rather than living only on `research_jobs` and requiring a join) for two
+reasons: it keeps app-layer filters and indexes simple, and it's what
+makes PostgreSQL Row-Level
 Security on those tables a plain equality check instead of a subquery —
 see SECURITY.md §"Tenant isolation" for the full RLS design, including why
 `research_jobs` itself is deliberately excluded from RLS.
@@ -290,8 +316,9 @@ GET    /api/v1/research            → list jobs for caller's org
 GET    /api/v1/research/{id}       → job detail + status
 GET    /api/v1/research/{id}/results
 GET    /api/v1/research/{id}/companies  → resolved companies for this job,
-                                           each with its confidence_score
-                                           and evidence (Phase 6)
+                                           each with its confidence_score,
+                                           evidence (Phase 6), and signals
+                                           (Phase 7)
 WS     /api/v1/research/{id}/ws    → live progress events
 
 GET    /api/v1/health              → liveness/readiness (checks DB + Redis)
@@ -399,6 +426,20 @@ token's claims — a user can never read another organization's job.
   least `VERIFIED_MIN_DOMAINS` (3) independent domains, per master spec
   §98. Runs once per company, immediately after Entity Resolution writes
   it, in the same worker loop.
+- `app/engines/commercial_signals/detector.py::detect_signals` — Phase 7:
+  scans a company's own crawled page text for the same disclosed keyword
+  vocabulary Query Intelligence already uses on the user's query
+  (`query_intelligence/keywords.py::SIGNALS` — reused, not duplicated;
+  that module's own comment flagged it as this phase's "documented
+  starting vocabulary"). At most one signal per type per page (first
+  matching surface form wins). `decay_strength` fades a signal's
+  `base_weight` (uniform 1.0 — per-type weighting is Phase 8's Intent
+  Engine's job, not this phase's) to 0 over `SIGNAL_DECAY_DAYS` (180,
+  matching Verification's `OUTDATED_DAYS`), anchored to the source page's
+  crawl time — the same proxy-for-recency limitation Verification
+  discloses for evidence freshness, since no real event date is extracted
+  from page prose. Runs once per company, immediately after Verification,
+  in the same worker loop.
 
 ## 8. Risks identified going in
 

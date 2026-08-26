@@ -680,6 +680,122 @@ sequence, or the still-open remainders of Phase 2 (multi-provider source
 discovery) and Phase 3 (adaptive Playwright-based fetcher), pending
 direction from whoever's driving next.
 
+## Session 8 verification report — Commercial Signal Engine
+
+Scope: `AUDIT_BPO_CRM.md`'s Phase 7 (Commercial Signals + Temporal
+Decay). Same implement→test→report discipline as Sessions 1–7.
+
+**IMPLEMENTED** — `app/engines/commercial_signals/detector.py::
+detect_signals`: scans a resolved company's own crawled page text for the
+same disclosed keyword vocabulary `query_intelligence/keywords.py::
+SIGNALS` already uses to parse the user's *query* — that dict's own
+comment had flagged it as "recorded now so [Phase 7's Commercial Signal
+Engine] has a documented starting vocabulary," so this session reuses it
+rather than inventing a parallel keyword table (9 types: `hiring,
+expansion, funding, acquisition, leadership_change, product_launch,
+digital_transformation, layoffs, closure`, each already carrying a
+`positive`/`negative` polarity). At most one signal per type per page
+(first matching surface form wins, same simplicity as entity_resolution's
+name selection), with a bounded excerpt around the match. Temporal decay:
+`decay_strength` fades a signal's `base_weight` — deliberately uniform
+`1.0` across every type, since per-type weighting is a scoring decision
+that belongs to Phase 8's Intent Engine, not this phase — linearly to `0`
+over `SIGNAL_DECAY_DAYS` (180, matching Verification's `OUTDATED_DAYS` for
+consistency), anchored to the source page's crawl time. No real event
+date is extracted from page prose — that's a much harder, error-prone NLP
+problem than keyword matching, and this phase doesn't attempt it, the
+same disclosed limitation Verification already carries for evidence
+freshness. New `commercial_signals` table (migration `0007`, RLS via the
+same `tenant_isolation` policy as every prior per-job table), one row per
+detected (company, page, signal_type). Runs once per company in
+`workers/tasks/research.py`, immediately after Verification writes its
+score — same wave, same transaction. New `signals.detected` event
+(`{"counts": {...}}`), fired only if at least one signal was found
+anywhere in the job (unlike `entities.resolved`/`verification.completed`,
+a job can complete with real companies and zero signals). `GET
+/research/{id}/companies` now returns each company's `signals` inline.
+
+Frontend: `CompanyGroup` gains a `SignalChips` row — one badge per
+distinct signal type found (deduplicated to the strongest instance across
+the company's pages), colored by polarity (secondary for positive,
+warning for negative), with a tooltip disclosing the matched keyword,
+excerpt, and current decayed strength.
+
+**TESTED** — 22 new tests: 12 pure-logic unit tests for the detector
+(`tests/test_commercial_signals.py` — the `CommercialSignalType` enum
+stays in sync with `SIGNALS`' keys, case-insensitive matching, multiple
+distinct types on one page, at-most-one-per-type, excerpt bounding,
+polarity carried through, decay at zero/midpoint/past-the-window ages,
+decay handles naive datetimes without raising), 2 full worker-pipeline
+tests with the network layer stubbed (`tests/test_commercial_signals_
+pipeline.py` — a page mentioning a funding round produces exactly one
+`funding` `CommercialSignal` row at full decayed strength; generic
+content with no signal keywords produces zero rows and no
+`signals.detected` event), and the existing API-layer test in
+`tests/test_research.py` was extended (not duplicated) to assert
+`signals` serializes correctly through `GET /research/{id}/companies`.
+146/146 backend tests pass on SQLite (5 skipped — Postgres-only RLS
+tests); 151/151 pass against a real local PostgreSQL with migrations
+`0001`–`0007` applied, pointed at the non-superuser `bpo_app` role — every
+Commercial Signal write in the pipeline tests went through real RLS
+enforcement on `commercial_signals`, and the `0007` migration's
+upgrade/downgrade/upgrade cycle was exercised directly. Backend `ruff
+check`/`ruff format` and frontend `npm run build`/`npm run lint` both
+clean (same 2 pre-existing Fast-Refresh warnings as every prior session).
+
+**WORKING** — confirmed via the pipeline/API tests (real DB writes, real
+detection/decay logic, only network stubbed — same sandbox constraint as
+every prior session) **and** a live visual check: seeded a `COMPLETED`
+research job directly via the app's SQLAlchemy models with one company
+carrying three positive signals (funding, hiring, expansion) and one
+company carrying a negative signal (layoffs), then loaded
+`ResearchDetailPage` in a real Chromium browser via Playwright. Both
+polarity colors rendered correctly and each chip's label matched its
+signal type; no bugs were caught by the live check this session (the
+pipeline tests had already caught the one real bug — see below — before
+the visual pass even ran).
+
+One real bug was found, by the pipeline tests, not by hand-inspection:
+the first draft of `decay_strength` subtracted `now - crawled_at`
+directly, and the very first pipeline test (a real crawled page, not a
+hand-built fixture) raised `TypeError: can't subtract offset-naive and
+offset-aware datetimes` — the same SQLite-vs-Postgres tzinfo gap Session
+7's Verification Engine hit and documented (SQLite silently drops tzinfo
+from a `DateTime(timezone=True)` column on read-back). Rather than import
+Verification's private `_age_days` helper across engines, this session
+duplicates a two-line equivalent locally in `commercial_signals/
+detector.py`, with a comment explaining why the duplication is
+deliberate: the two engines are otherwise decoupled by design (see
+ARCHITECTURE.md's engine-per-concern layout), and a shared cross-engine
+utility module felt like more coupling than a 4-line fix warranted.
+
+**REMAINING** — No real event-date extraction: `decayed_strength` reflects
+"how recently we crawled a page mentioning this," not "how recently the
+event actually happened" — a funding round from a year ago still decays
+as if detected today, if the press release stays on the page and gets
+re-crawled. `base_weight` is uniform across all 9 signal types; nothing
+in this phase judges "funding" as more or less important than "hiring"
+for any given tenant's sales motion — intentional, since per-tenant
+weighting is Phase 8's Intent Engine / master spec §56's Configuration
+Engine's job. `decayed_strength` is computed once, at pipeline-completion
+time, same non-live-updating limitation as `confidence_scores` (see
+Session 7's report) — it doesn't keep decaying in the database as real
+time passes without a future re-run (Phase 10 Monitoring). Detection is
+purely lexical: a page that describes a funding round without using any
+of the `SIGNALS` dict's literal surface forms produces no signal — this
+is the same recall-vs-precision tradeoff every keyword-table engine in
+this codebase already discloses (query_intelligence, crawler
+prioritization).
+
+**NEXT** — per `AUDIT_BPO_CRM.md`'s approved phase table: Phase 8 (Fit +
+Intent + Opportunity Scoring — the master spec's explicit
+FIT/INTENT/CONFIDENCE-as-separate-tables architecture, §4) is the next
+unstarted phase in sequence, and now has real `confidence_scores` and
+`commercial_signals` rows to build `intent_scores`'
+`contributing_signals[]` from — or the still-open remainders of Phase 2
+(multi-provider source discovery) and Phase 3 (adaptive Playwright-based
+fetcher), pending direction from whoever's driving next.
+
 ## Phase 1 — Foundation
 
 **Scope delivered:** monorepo layout; FastAPI app factory with health check

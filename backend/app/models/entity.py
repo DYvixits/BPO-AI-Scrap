@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from app.models.commercial_signal import CommercialSignal
     from app.models.verification import ConfidenceScore, Evidence
 
 
@@ -48,6 +49,10 @@ class Company(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     confidence_score: Mapped["ConfidenceScore | None"] = relationship(
         uselist=False, cascade="all, delete-orphan"
     )
+    # engines/commercial_signals (AUDIT_BPO_CRM.md Phase 7) — same
+    # one-directional, populated-once-after-resolution lifecycle as
+    # evidence/confidence_score above.
+    signals: Mapped[list["CommercialSignal"]] = relationship(cascade="all, delete-orphan")
 
 
 class EntityAlias(UUIDPrimaryKeyMixin, TimestampMixin, Base):
