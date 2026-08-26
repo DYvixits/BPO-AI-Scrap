@@ -79,7 +79,11 @@ async def list_companies_for_job(
     stmt = (
         select(Company)
         .where(Company.organization_id == organization_id, Company.research_job_id == job_id)
-        .options(selectinload(Company.aliases))
+        .options(
+            selectinload(Company.aliases),
+            selectinload(Company.evidence),
+            selectinload(Company.confidence_score),
+        )
         .order_by(Company.canonical_name)
     )
     result = await db.scalars(stmt)

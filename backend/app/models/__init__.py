@@ -11,11 +11,14 @@ from app.models.research import (
 )
 from app.models.tenant import TenantQuota, TenantTier
 from app.models.user import User
+from app.models.verification import ConfidenceScore, Evidence
 
 __all__ = [
     "Company",
+    "ConfidenceScore",
     "CrawlPage",
     "EntityAlias",
+    "Evidence",
     "Organization",
     "OrganizationMember",
     "ResearchEvent",
