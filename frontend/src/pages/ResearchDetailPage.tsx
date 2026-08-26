@@ -12,6 +12,7 @@ import { describeEvent, STATUS_LABEL, statusProgressPercent } from "@/features/r
 import { getResearch, getResearchCompanies, getResearchResults } from "@/features/research/api";
 import { useResearchEvents } from "@/features/research/useResearchEvents";
 import type {
+  CommercialSignalType,
   Company,
   ConfidenceScore,
   ResearchEvent,
@@ -273,6 +274,7 @@ function CompanyGroup({
         ))}
       </div>
       {company.evidence.length > 0 && <EvidenceDisclosure evidence={company.evidence} />}
+      {company.signals.length > 0 && <SignalChips signals={company.signals} />}
     </div>
   );
 }
@@ -334,6 +336,46 @@ function EvidenceDisclosure({ evidence }: { evidence: Company["evidence"] }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+const SIGNAL_LABEL: Record<CommercialSignalType, string> = {
+  hiring: "Hiring",
+  expansion: "Expansion",
+  funding: "Funding",
+  acquisition: "Acquisition",
+  leadership_change: "Leadership change",
+  product_launch: "Product launch",
+  digital_transformation: "Digital transformation",
+  layoffs: "Layoffs",
+  closure: "Closure",
+};
+
+function SignalChips({ signals }: { signals: Company["signals"] }) {
+  // One chip per type — the strongest (least-decayed) instance across the
+  // company's pages represents the type, matching VerificationBadge's
+  // "one badge, not one per page" density.
+  const byType = new Map<string, Company["signals"][number]>();
+  for (const signal of signals) {
+    const existing = byType.get(signal.signal_type);
+    if (!existing || signal.decayed_strength > existing.decayed_strength) {
+      byType.set(signal.signal_type, signal);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-xs text-muted-foreground">Signals:</span>
+      {[...byType.values()].map((signal) => (
+        <Badge
+          key={signal.signal_type}
+          variant={signal.polarity === "positive" ? "secondary" : "warning"}
+          title={`"${signal.matched_keyword}" — ${signal.excerpt}\n\nStrength ${Math.round(signal.decayed_strength * 100)}% (decays over time from when the page was crawled — see docs/API.md).`}
+        >
+          {SIGNAL_LABEL[signal.signal_type]}
+        </Badge>
+      ))}
     </div>
   );
 }

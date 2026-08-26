@@ -267,11 +267,11 @@ breaks. Everything else is either reuse-as-is or net-new addition.
 | Data Enrichment Engine | MISSING |
 | Verification Engine | PARTIAL — `app/engines/verification` computes a company-level, source-count-based confidence score (5 of 7 Truth Engine states); `confidence.py`'s per-page placeholder still exists separately, deliberately not retired (see Phase 6 row below) |
 | Evidence Engine | PARTIAL — an `evidence` table exists, but it's page-level (which crawled pages support a company), not claim-level; no `Claim` table, so no claim-to-excerpt linking yet |
-| Commercial Signal Engine | MISSING |
+| Commercial Signal Engine | PARTIAL — `app/engines/commercial_signals` detects 9 keyword-matched signal types on a company's own crawled pages (reusing Query Intelligence's `SIGNALS` vocabulary) with time-decayed strength; no per-signal-type weighting yet (deferred to Intent Engine) |
 | Intent Engine | MISSING |
 | Fit Scoring Engine | MISSING |
 | Opportunity Scoring Engine | MISSING |
-| Temporal Intelligence Engine | MISSING |
+| Temporal Intelligence Engine | PARTIAL — `commercial_signals.decayed_strength` is a real, disclosed time-decay function, but it's a per-signal field inside the Commercial Signal Engine, not a standalone engine computing momentum/trend across signals over time — that's still MISSING |
 | Knowledge Graph Engine | MISSING, sequence last (§7) |
 | AI/LLM Orchestrator | MISSING |
 | Result Ranking Engine | PARTIAL — results ordered by the placeholder confidence today |
@@ -340,7 +340,7 @@ this as a proposal to confirm, not a decision made unilaterally**:
 | 4 | Extraction + Deduplication (multi-pass extraction, 6-level dedup) | Multi-pass extraction (trafilatura text + JSON-LD/OG/contact structured data) + 3-layer dedup (URL normalization, exact-hash, near-duplicate shingle/Jaccard) ✅ done — see `docs/phases/PHASE_PLAN.md`'s Session 5 verification report; "6-level dedup" was never broken down anywhere in this repo's docs, so 3 more levels remain undefined, not just unimplemented |
 | 5 | Entity Resolution | Company-only entity resolution (same-registrable-domain grouping + cross-domain merge on exact normalized-name match, `match_confidence` 1.0/0.7) ✅ done — see `docs/phases/PHASE_PLAN.md`'s Session 6 verification report; person-entity resolution (same person across pages/sources) not started |
 | 6 | Verification + Evidence (retires the placeholder confidence column) | Company-level, source-count-based verification (per-company `confidence_scores` + page-level `evidence`, 5 of 7 Truth Engine states — `UNVERIFIABLE/UNCERTAIN/CORROBORATED/VERIFIED/OUTDATED`) ✅ done — see `docs/phases/PHASE_PLAN.md`'s Session 7 verification report; `PROBABLE`/`CONTRADICTED` and all claim-level agreement/contradiction detection not started (needs claim extraction, still MISSING); the Phase 1–3 placeholder `research_results.confidence` was deliberately *not* retired — see that report's REMAINING section for why |
-| 7 | Commercial Signals + Temporal Decay | Not started |
+| 7 | Commercial Signals + Temporal Decay | 9 keyword-matched commercial signal types (funding/hiring/leadership/product/expansion/partnership-style/layoffs/closure/digital transformation, reusing Query Intelligence's `SIGNALS` vocabulary) with time-decayed strength (linear decay to 0 over 180 days, anchored to crawl time) ✅ done — see `docs/phases/PHASE_PLAN.md`'s Session 8 verification report; no real event-date extraction, no per-signal-type weighting (both deliberately deferred to Phase 8's Intent Engine) |
 | 8 | **Fit + Intent + Opportunity Scoring** (moved up from implicit position — this is the CRM-facing payoff) | Not started |
 | 9 | **CRM Integration** (export/push/dedup-against-CRM) — *moved up from Phase 11*: a tenant gets value from Phases 2–8 landing in their CRM well before a knowledge graph exists | Not started |
 | 10 | AI Orchestrator (ModelRouter, structured multi-pass extraction) | Not started |

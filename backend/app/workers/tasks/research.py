@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import database as database_module
 from app.core.config import get_settings
 from app.core.redis import get_redis_pool, publish_research_event
+from app.engines.commercial_signals.detector import BASE_WEIGHT, decay_strength, detect_signals
 from app.engines.crawler.fetcher import FetchResult, PageFetcher
 from app.engines.crawler.links import extract_links
 from app.engines.crawler.normalize import normalize_url
@@ -48,7 +49,12 @@ from app.engines.search.duckduckgo import DuckDuckGoSearchProvider
 from app.engines.search_strategy.strategy import build_queries
 from app.engines.verification.engine import EvidenceInput, compute_confidence
 from app.models.research import ResearchStatus
-from app.repositories import entity_repository, research_repository, verification_repository
+from app.repositories import (
+    commercial_signal_repository,
+    entity_repository,
+    research_repository,
+    verification_repository,
+)
 from app.services.confidence import basic_relevance_score
 
 logger = logging.getLogger(__name__)
@@ -389,6 +395,7 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
         resolved_companies = resolve_companies(resolvable)
         page_by_url = {page.url: page for page in crawled_pages}
         verification_counts: dict[str, int] = {}
+        signal_counts: dict[str, int] = {}
         for resolved in resolved_companies:
             async with _tenant_session(organization_id) as db:
                 company = await entity_repository.add_company(
@@ -448,6 +455,37 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
                 verification_counts[confidence_result.status.value] = (
                     verification_counts.get(confidence_result.status.value, 0) + 1
                 )
+
+                # --- COMMERCIAL SIGNALS (AUDIT_BPO_CRM.md Phase 7) — scan
+                # this company's own crawled pages for the same disclosed
+                # keyword vocabulary Query Intelligence uses on the
+                # user's query (query_intelligence/keywords.py::SIGNALS).
+                # See engines/commercial_signals/detector.py's module
+                # docstring for the time-decay approach and its limits. ---
+                now = datetime.now(UTC)
+                for url in resolved.member_urls:
+                    page = page_by_url.get(url)
+                    if page is None:
+                        continue
+                    for detected in detect_signals(page.extracted_text):
+                        decayed = decay_strength(BASE_WEIGHT, crawled_at=page.created_at, now=now)
+                        await commercial_signal_repository.add_signal(
+                            db,
+                            organization_id=organization_id,
+                            company_id=company.id,
+                            job_id=job_id,
+                            signal_type=detected.signal_type,
+                            polarity=detected.polarity,
+                            matched_keyword=detected.matched_keyword,
+                            excerpt=detected.excerpt,
+                            source_url=url,
+                            base_weight=BASE_WEIGHT,
+                            crawled_at=page.created_at,
+                            decayed_strength=decayed,
+                        )
+                        signal_counts[detected.signal_type.value] = (
+                            signal_counts.get(detected.signal_type.value, 0) + 1
+                        )
         if resolved_companies:
             await _emit(
                 organization_id, job_id, "entities.resolved", {"count": len(resolved_companies)}
@@ -455,6 +493,8 @@ async def run_research_job(ctx: dict[str, Any], job_id_str: str) -> None:
             await _emit(
                 organization_id, job_id, "verification.completed", {"counts": verification_counts}
             )
+            if signal_counts:
+                await _emit(organization_id, job_id, "signals.detected", {"counts": signal_counts})
 
         await _set_status(organization_id, job_id, ResearchStatus.EXTRACTING)
         await _set_status(organization_id, job_id, ResearchStatus.COMPLETED)

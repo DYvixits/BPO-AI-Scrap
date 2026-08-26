@@ -2,6 +2,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.commercial_signal import CommercialSignalOut
 from app.schemas.verification import ConfidenceScoreOut, EvidenceOut
 
 
@@ -26,3 +27,6 @@ class CompanyOut(BaseModel):
     # Verification Engine has run, same lifecycle as aliases above.
     confidence_score: ConfidenceScoreOut | None = None
     evidence: list[EvidenceOut] = []
+    # engines/commercial_signals (AUDIT_BPO_CRM.md Phase 7) — same
+    # populated-once-after-resolution lifecycle as the fields above.
+    signals: list[CommercialSignalOut] = []

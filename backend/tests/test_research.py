@@ -90,9 +90,10 @@ async def test_companies_for_unknown_research_returns_404(client, auth_headers):
 async def test_companies_response_includes_verification_and_evidence(
     client, auth_headers, monkeypatch
 ):
-    """API-layer check that CompanyOut's nested confidence_score/evidence
-    actually serialize from the ORM relationships (entity_repository.py's
-    eager-loads) — the pipeline tests in test_verification_pipeline.py
+    """API-layer check that CompanyOut's nested confidence_score/evidence/
+    signals actually serialize from the ORM relationships (entity_
+    repository.py's eager-loads) — the pipeline tests in
+    test_verification_pipeline.py / test_commercial_signals_pipeline.py
     check the DB rows directly, not that FastAPI can turn them into JSON."""
 
     async def fake_search(self, query, *, max_results):
@@ -103,6 +104,7 @@ async def test_companies_response_includes_verification_and_evidence(
             "<html><head><title>Acme</title>"
             '<meta property="og:site_name" content="Acme">'
             "</head><body><article>"
+            "<p>Acme is hiring across every team this quarter.</p>"
             + "".join(f"<p>Acme builds great products, sentence {i}.</p>" for i in range(12))
             + "</article></body></html>"
         )
@@ -133,6 +135,9 @@ async def test_companies_response_includes_verification_and_evidence(
     assert company["confidence_score"]["source_diversity"] == 1
     assert len(company["evidence"]) == 1
     assert company["evidence"][0]["domain"] == "acme.example"
+    assert len(company["signals"]) == 1
+    assert company["signals"][0]["signal_type"] == "hiring"
+    assert company["signals"][0]["decayed_strength"] == 1.0
 
 
 @pytest.mark.asyncio

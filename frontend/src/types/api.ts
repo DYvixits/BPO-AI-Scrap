@@ -105,6 +105,27 @@ export interface ConfidenceScore {
   overall_score: number;
 }
 
+export type CommercialSignalType =
+  | "hiring"
+  | "expansion"
+  | "funding"
+  | "acquisition"
+  | "leadership_change"
+  | "product_launch"
+  | "digital_transformation"
+  | "layoffs"
+  | "closure";
+
+export interface CommercialSignal {
+  signal_type: CommercialSignalType;
+  polarity: "positive" | "negative";
+  matched_keyword: string;
+  excerpt: string;
+  source_url: string;
+  base_weight: number;
+  decayed_strength: number;
+}
+
 export interface Company {
   id: string;
   canonical_name: string;
@@ -114,4 +135,5 @@ export interface Company {
   aliases: EntityAlias[];
   confidence_score: ConfidenceScore | null;
   evidence: Evidence[];
+  signals: CommercialSignal[];
 }

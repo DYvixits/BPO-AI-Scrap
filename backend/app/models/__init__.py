@@ -1,3 +1,4 @@
+from app.models.commercial_signal import CommercialSignal
 from app.models.entity import Company, EntityAlias
 from app.models.organization import Organization, OrganizationMember, Role
 from app.models.research import (
@@ -14,6 +15,7 @@ from app.models.user import User
 from app.models.verification import ConfidenceScore, Evidence
 
 __all__ = [
+    "CommercialSignal",
     "Company",
     "ConfidenceScore",
     "CrawlPage",

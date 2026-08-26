@@ -102,7 +102,7 @@ Same shape plus `events: ResearchEvent[]` (the append-only progress log).
 the two cases are indistinguishable by design (no cross-tenant existence
 leak).
 
-### `GET /research/{id}/companies` (Phase 5 + Phase 6)
+### `GET /research/{id}/companies` (Phase 5 + Phase 6 + Phase 7)
 
 ```json
 [
@@ -128,6 +128,17 @@ leak).
     "evidence": [
       { "source_url": "https://kesho.example.com", "domain": "kesho.example.com", "excerpt": "Kesho Finance closed a $4M seed round..." },
       { "source_url": "https://crunchbase.example.com/kesho", "domain": "crunchbase.example.com", "excerpt": "Crunchbase profile: Kesho Finance, fintech, Nairobi, Kenya." }
+    ],
+    "signals": [
+      {
+        "signal_type": "funding",
+        "polarity": "positive",
+        "matched_keyword": "raised",
+        "excerpt": "Kesho Finance closed a $4M seed round led by regional investors.",
+        "source_url": "https://kesho.example.com",
+        "base_weight": 1.0,
+        "decayed_strength": 0.94
+      }
     ]
   }
 ]
@@ -156,6 +167,20 @@ least 3 distinct domains. `evidence` lists every crawled page counted
 toward that score — the auditable trail behind the number, not a
 claim-by-claim fact check.
 
+`signals` (Phase 7, `app/engines/commercial_signals`) lists commercial
+events (funding, hiring, a leadership change, ...) found by keyword match
+on the company's own crawled pages — the same disclosed vocabulary Query
+Intelligence uses to parse `objective.signals` from the user's query, now
+applied to what the pages actually say. `signal_type` is one of `hiring |
+expansion | funding | acquisition | leadership_change | product_launch |
+digital_transformation | layoffs | closure`; `polarity` is `positive` or
+`negative`. `decayed_strength` fades `base_weight` (currently a uniform
+`1.0` for every type) toward `0` the longer ago the source page was
+crawled — see `ARCHITECTURE.md` §7 for the decay curve and its
+proxy-for-recency limitation (no real event date is extracted from the
+page text). Empty until the pipeline has run; a company can have zero
+signals even after completion if nothing on its pages matched.
+
 ### `GET /research/{id}/results`
 
 ```json
@@ -176,7 +201,8 @@ Browser WebSocket clients can't set headers, so auth is a query param:
 kinds as the `events` array on the job (`status.changed, search.completed,
 sources.discovered, page.completed, page.failed, crawl.expanded,
 crawl.stopped_early, entities.resolved, verification.completed,
-research.completed, research.failed`), as JSON text frames, as they happen.
+signals.detected, research.completed, research.failed`), as JSON text
+frames, as they happen.
 
 `page.completed`'s payload also carries `duplicate_reason` (Phase 4):
 `"exact_hash"` when the page's content is byte-identical to one already
@@ -208,6 +234,15 @@ same "only if there's at least one company" condition — one count per
 Truth Engine status produced for this job's companies (statuses with a
 zero count are omitted, not sent as `0`). See `GET /research/{id}/companies`
 above for what each status means.
+
+`signals.detected` (`{"counts": {"funding": 1, "hiring": 2, ...}}`,
+Phase 7) fires immediately after `verification.completed`, but only if at
+least one signal was found anywhere in the job — unlike
+`entities.resolved`/`verification.completed`, it's entirely possible for
+a job to complete with real companies and zero signals (most crawled
+pages don't happen to mention funding, hiring, etc.), and this event
+simply doesn't fire in that case. See `GET /research/{id}/companies`
+above for what each signal type means.
 
 ## Health
 
