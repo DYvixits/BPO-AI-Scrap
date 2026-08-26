@@ -84,6 +84,9 @@ async def list_companies_for_job(
             selectinload(Company.evidence),
             selectinload(Company.confidence_score),
             selectinload(Company.signals),
+            selectinload(Company.fit_score),
+            selectinload(Company.intent_score),
+            selectinload(Company.opportunity_score),
         )
         .order_by(Company.canonical_name)
     )

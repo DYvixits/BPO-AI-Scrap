@@ -10,6 +10,7 @@ from app.models.research import (
     ResearchStatus,
     Source,
 )
+from app.models.scoring import FitScore, IntentScore, OpportunityScore
 from app.models.tenant import TenantQuota, TenantTier
 from app.models.user import User
 from app.models.verification import ConfidenceScore, Evidence
@@ -21,6 +22,9 @@ __all__ = [
     "CrawlPage",
     "EntityAlias",
     "Evidence",
+    "FitScore",
+    "IntentScore",
+    "OpportunityScore",
     "Organization",
     "OrganizationMember",
     "ResearchEvent",

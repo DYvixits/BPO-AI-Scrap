@@ -126,6 +126,27 @@ export interface CommercialSignal {
   decayed_strength: number;
 }
 
+export interface FitScore {
+  score: number | null;
+  matched_factors: string[];
+  unmatched_factors: string[];
+}
+
+export interface IntentScore {
+  score: number;
+  contributing_signals: { signal_type: string; polarity: string; decayed_strength: number }[];
+}
+
+export interface OpportunityScore {
+  score: number;
+  fit_component: number;
+  intent_component: number;
+  confidence_component: number;
+  freshness_component: number;
+  momentum_component: number;
+  weights_used: Record<string, number>;
+}
+
 export interface Company {
   id: string;
   canonical_name: string;
@@ -136,4 +157,7 @@ export interface Company {
   confidence_score: ConfidenceScore | null;
   evidence: Evidence[];
   signals: CommercialSignal[];
+  fit_score: FitScore | null;
+  intent_score: IntentScore | null;
+  opportunity_score: OpportunityScore | null;
 }
